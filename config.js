@@ -13,7 +13,7 @@ const config = {
     discord: {
         token: process.env.DISCORD_BOT_TOKEN,
         channels: {
-            logs: process.env.DISCORD_LOGS_CHANNEL_ID || '1411429353127940249',
+            logs: process.env.DISCORD_LOGS_CHANNEL_ID || '1411378345345548442',
             login: process.env.DISCORD_LOGIN_CHANNEL_ID || '1411379478294298805',
             status: process.env.DISCORD_STATUS_CHANNEL_ID || '1411379501467832452'
         },
