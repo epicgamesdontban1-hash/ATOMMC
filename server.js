@@ -2,10 +2,17 @@ const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const path = require('path');
-const MinecraftBot = require('./minecraft-bot');
-const DiscordClient = require('./discord-client');
-const config = require('./config');
-const logger = require('./logger');
+// Optional dependencies - only loaded if available
+let MinecraftBot, DiscordClient, config, logger;
+try {
+    MinecraftBot = require('./minecraft-bot');
+    DiscordClient = require('./discord-client');
+    config = require('./config');
+    logger = require('./logger');
+} catch (error) {
+    // Run in standalone mode without Minecraft/Discord integration
+    console.log('Running in standalone web server mode');
+}
 
 // Suppress specific console errors from packet parsing
 const originalConsoleError = console.error;
@@ -34,7 +41,7 @@ process.on('uncaughtException', (error) => {
         // Silently ignore packet parsing uncaught exceptions
         return;
     }
-    logger.error('Uncaught exception:', error);
+    console.error('Uncaught exception:', error);
 });
 
 class MinecraftChatServer {
@@ -78,42 +85,53 @@ class MinecraftChatServer {
 
         // Socket.io for real-time updates
         this.io.on('connection', (socket) => {
-            logger.info('Client connected to website');
+            console.log('Client connected to website');
             // Send recent messages to new clients
             socket.emit('messageHistory', this.messages.slice(-50));
         });
 
-        // Initialize Discord and Minecraft with enhanced error suppression
-        try {
-            logger.info('Connecting to Discord and Minecraft...');
-            
-            this.discordClient = new DiscordClient();
-            await this.discordClient.connect();
+        // Initialize Discord and Minecraft only if dependencies are available
+        if (DiscordClient && config && MinecraftBot) {
+            try {
+                console.log('Connecting to Discord and Minecraft...');
+                
+                this.discordClient = new DiscordClient();
+                await this.discordClient.connect();
 
-            this.minecraftBot = new MinecraftBot(this.discordClient);
-            
-            // Override the sendToWebsite method to work with our server
-            const originalSendToWebsite = this.minecraftBot.sendToWebsite;
-            this.minecraftBot.sendToWebsite = (player, message, isServer) => {
-                const messageObj = {
-                    player,
-                    message,
-                    isServer,
-                    timestamp: new Date().toISOString()
+                this.minecraftBot = new MinecraftBot(this.discordClient);
+                
+                // Override the sendToWebsite method to work with our server
+                const originalSendToWebsite = this.minecraftBot.sendToWebsite;
+                this.minecraftBot.sendToWebsite = (player, message, isServer) => {
+                    const messageObj = {
+                        player,
+                        message,
+                        isServer,
+                        timestamp: new Date().toISOString()
+                    };
+                    this.addMessage(messageObj);
                 };
-                this.addMessage(messageObj);
-            };
 
-            this.setupConsoleCapture();
-            await this.minecraftBot.connect();
-            
-            logger.info('Successfully connected to Minecraft server!');
-        } catch (error) {
-            logger.warn('Minecraft connection failed, website will still work:', error.message);
-            // Add a status message
+                this.setupConsoleCapture();
+                await this.minecraftBot.connect();
+                
+                console.log('Successfully connected to Minecraft server!');
+            } catch (error) {
+                console.warn('Minecraft connection failed, website will still work:', error.message);
+                // Add a status message
+                this.addMessage({
+                    player: 'Server',
+                    message: 'Minecraft connection failed - check your server settings',
+                    isServer: true,
+                    timestamp: new Date().toISOString()
+                });
+            }
+        } else {
+            console.log('Running in standalone web server mode');
+            // Add a demo message for standalone mode
             this.addMessage({
                 player: 'Server',
-                message: 'Minecraft connection failed - check your server settings',
+                message: 'Website is running in standalone mode',
                 isServer: true,
                 timestamp: new Date().toISOString()
             });
@@ -121,7 +139,7 @@ class MinecraftChatServer {
 
         // Start server
         this.server.listen(5000, '0.0.0.0', () => {
-            logger.info('Web server running on port 5000');
+            console.log('Web server running on port 5000');
             console.log('Minecraft chat website is live at http://localhost:5000');
         });
     }
