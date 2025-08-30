@@ -11,7 +11,7 @@ const config = {
         maxReconnectAttempts: parseInt(process.env.MAX_RECONNECT_ATTEMPTS) || 10
     },
     discord: {
-        token: process.env.DISCORD_BOT_TOKEN || 'MTQwOTE5Njg1MzczMTM5NzY4Mw.GdMOeR.EP2yqOvxGTdBIdNYz_Uz_MNPVZeFU3-hzFgY_o',
+        token: process.env.DISCORD_BOT_TOKEN,
         channels: {
             logs: process.env.DISCORD_LOGS_CHANNEL_ID || '1411378345345548442',
             login: process.env.DISCORD_LOGIN_CHANNEL_ID || '1411379478294298805',
