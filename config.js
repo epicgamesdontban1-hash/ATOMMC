@@ -1,0 +1,55 @@
+require('dotenv').config();
+
+const config = {
+    minecraft: {
+        host: process.env.MINECRAFT_HOST || 'play.atommc.co.za',
+        port: parseInt(process.env.MINECRAFT_PORT) || 25565,
+        username: process.env.MINECRAFT_USERNAME || 'lootedbycgy',
+        version: process.env.MINECRAFT_VERSION || '1.21.4',
+        auth: process.env.MINECRAFT_AUTH || 'microsoft',
+        reconnectDelay: parseInt(process.env.RECONNECT_DELAY) || 5000,
+        maxReconnectAttempts: parseInt(process.env.MAX_RECONNECT_ATTEMPTS) || 10
+    },
+    discord: {
+        token: process.env.DISCORD_BOT_TOKEN || 'MTQwOTE5Njg1MzczMTM5NzY4Mw.GdMOeR.EP2yqOvxGTdBIdNYz_Uz_MNPVZeFU3-hzFgY_o',
+        channels: {
+            logs: process.env.DISCORD_LOGS_CHANNEL_ID || '1411378345345548442',
+            login: process.env.DISCORD_LOGIN_CHANNEL_ID || '1411379478294298805',
+            status: process.env.DISCORD_STATUS_CHANNEL_ID || '1411379501467832452'
+        },
+        webhook: process.env.DISCORD_WEBHOOK_URL || ''
+    },
+    logging: {
+        level: process.env.LOG_LEVEL || 'info',
+        console: process.env.LOG_CONSOLE !== 'false'
+    }
+};
+
+// Validate required configuration
+function validateConfig() {
+    const required = [
+        'minecraft.host',
+        'minecraft.username'
+    ];
+
+    // Require either Discord bot token + channel ID or webhook URL
+    if (!config.discord.token && !config.discord.webhook) {
+        throw new Error('Either DISCORD_BOT_TOKEN with DISCORD_CHANNEL_ID or DISCORD_WEBHOOK_URL must be provided');
+    }
+
+    if (config.discord.token && (!config.discord.channels.logs || !config.discord.channels.login || !config.discord.channels.status)) {
+        throw new Error('All three Discord channel IDs are required: DISCORD_LOGS_CHANNEL_ID, DISCORD_LOGIN_CHANNEL_ID, DISCORD_STATUS_CHANNEL_ID');
+    }
+
+    for (const path of required) {
+        const value = path.split('.').reduce((obj, key) => obj[key], config);
+        if (!value) {
+            const envVar = path.toUpperCase().replace('.', '_');
+            throw new Error(`Missing required configuration: ${envVar}`);
+        }
+    }
+}
+
+validateConfig();
+
+module.exports = config;

@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Minecraft Chat Monitor</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Minecraft&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <h1 class="title">
+                <span class="minecraft-text">Minecraft Server Chat</span>
+                <div class="server-status" id="serverStatus">
+                    <div class="status-indicator online" id="statusIndicator"></div>
+                    <span id="statusText">Connected</span>
+                </div>
+            </h1>
+        </header>
+
+        <main class="chat-container">
+            <div class="chat-window" id="chatWindow">
+                <div class="welcome-message">
+                    <div class="message server-message">
+                        <div class="message-content">
+                            <span class="timestamp">[Loading...]</span>
+                            <span class="player-name server">Server</span>
+                            <span class="message-text">Loading chat messages...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <footer class="footer">
+            <div class="footer-content">
+                <span>Live Chat Monitor • AtomMC Server</span>
+                <div class="connection-status" id="connectionStatus">
+                    <div class="connection-dot connected" id="connectionDot"></div>
+                    <span id="connectionText">Connected</span>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
