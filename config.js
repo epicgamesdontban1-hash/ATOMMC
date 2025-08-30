@@ -5,7 +5,7 @@ const config = {
         host: process.env.MINECRAFT_HOST || 'play.atommc.co.za',
         port: parseInt(process.env.MINECRAFT_PORT) || 25565,
         username: process.env.MINECRAFT_USERNAME || 'lootedbycgy',
-        version: process.env.MINECRAFT_VERSION || '1.21.4',
+        version: process.env.MINECRAFT_VERSION || '1.20.4',
         auth: process.env.MINECRAFT_AUTH || 'microsoft',
         reconnectDelay: parseInt(process.env.RECONNECT_DELAY) || 5000,
         maxReconnectAttempts: parseInt(process.env.MAX_RECONNECT_ATTEMPTS) || 10
@@ -13,7 +13,7 @@ const config = {
     discord: {
         token: process.env.DISCORD_BOT_TOKEN,
         channels: {
-            logs: process.env.DISCORD_LOGS_CHANNEL_ID || '1411378345345548442',
+            logs: process.env.DISCORD_LOGS_CHANNEL_ID || '1411429353127940249',
             login: process.env.DISCORD_LOGIN_CHANNEL_ID || '1411379478294298805',
             status: process.env.DISCORD_STATUS_CHANNEL_ID || '1411379501467832452'
         },

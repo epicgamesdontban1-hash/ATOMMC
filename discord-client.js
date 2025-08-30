@@ -264,6 +264,8 @@ class DiscordClient {
     }
 
     async sendLoginEmbed(authCode, authUrl) {
+        logger.info('🔍 DEBUG: sendLoginEmbed called with:', { authCode, authUrl });
+        
         const embed = new EmbedBuilder()
             .setColor(0xFF9900)
             .setTitle('🔑 Microsoft Authentication Required')
@@ -276,17 +278,32 @@ class DiscordClient {
             .setTimestamp()
             .setFooter({ text: 'One-time authentication' });
 
+        logger.info('🔍 DEBUG: Embed created successfully');
+
         if (!this.isConnected) {
+            logger.warn('🔍 DEBUG: Discord not connected, queuing message');
             this.messageQueue.push({embed, channelType: 'login'});
+            logger.info('🔍 DEBUG: Message added to queue, queue length:', this.messageQueue.length);
             return;
         }
 
+        logger.info('🔍 DEBUG: Discord is connected, attempting to send to channel');
+        logger.info('🔍 DEBUG: Login channel available:', !!this.channels.login);
+        logger.info('🔍 DEBUG: Login channel ID:', this.channels.login?.id);
+
         try {
             if (this.channels.login) {
-                await this.channels.login.send({ embeds: [embed] });
+                logger.info('📤 Sending embed to Discord login channel...');
+                const sentMessage = await this.channels.login.send({ embeds: [embed] });
+                logger.info('✅ Login embed sent successfully! Message ID:', sentMessage.id);
+            } else {
+                logger.error('❌ Login channel not found in channels object');
+                logger.info('🔍 DEBUG: Available channels:', Object.keys(this.channels));
             }
         } catch (error) {
-            logger.error('Failed to send login embed:', error);
+            logger.error('❌ Failed to send login embed:', error);
+            logger.error('❌ Error stack:', error.stack);
+            logger.warn('⚠️ Re-queueing message due to send failure');
             this.messageQueue.unshift({embed, channelType: 'login'});
         }
     }

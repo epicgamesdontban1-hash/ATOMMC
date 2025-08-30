@@ -212,8 +212,7 @@ class MinecraftBot {
             }
         }
         
-        // Send to website via HTTP API
-        this.sendToWebsite(sender || 'Server', message, !sender);
+        
     }
 
     async handleReconnect() {
@@ -243,25 +242,7 @@ class MinecraftBot {
         }, config.minecraft.reconnectDelay);
     }
 
-    async sendToWebsite(player, message, isServer) {
-        try {
-            await fetch('http://localhost:5000/api/messages', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    player,
-                    message,
-                    isServer,
-                    timestamp: new Date().toISOString()
-                })
-            });
-        } catch (error) {
-            // Silently fail if website is not available
-            logger.debug('Failed to send message to website:', error.message);
-        }
-    }
+    
 
     startAntiAfk() {
         if (this.afkInterval) {
