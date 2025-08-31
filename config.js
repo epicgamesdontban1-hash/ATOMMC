@@ -17,7 +17,7 @@ const config = {
             login: process.env.DISCORD_LOGIN_CHANNEL_ID || '1411379478294298805',
             status: process.env.DISCORD_STATUS_CHANNEL_ID || '1411379501467832452'
         },
-        webhook: process.env.DISCORD_WEBHOOK_URL || 'https://discord.com/api/webhooks/1411437776557047896/jcqKInVyLDmMA6gRWBP3MCd-4-IMd7TdQgR0fBaxLyF3-PhVF6TjlpJcxbl4va8wd5s3'
+        webhook: process.env.DISCORD_WEBHOOK_URL || ''
     },
     logging: {
         level: process.env.LOG_LEVEL || 'info',
