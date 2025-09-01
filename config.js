@@ -23,7 +23,7 @@ const config = {
             status: process.env.DISCORD_STATUS_CHANNEL_ID || '1411379501467832452',
             playerList: process.env.DISCORD_PLAYER_LIST_CHANNEL_ID || '1412072351251697776'
         },
-        playerListMessageId: process.env.DISCORD_PLAYER_LIST_MESSAGE_ID || null,
+        playerListMessageId: process.env.DISCORD_PLAYER_LIST_MESSAGE_ID || '1412087227831418921',
         webhook: process.env.DISCORD_WEBHOOK_URL || ''
     },
     logging: {
