@@ -9,7 +9,8 @@ class DiscordClient {
         this.channels = {
             logs: null,
             login: null,
-            status: null
+            status: null,
+            playerList: null
         };
         this.webhook = null;
         this.isConnected = false;
@@ -63,8 +64,8 @@ class DiscordClient {
 
     async setupChannels() {
         try {
-            // Setup all three channels
-            const channelTypes = ['logs', 'login', 'status'];
+            // Setup all channels
+            const channelTypes = ['logs', 'login', 'status', 'playerList'];
             
             for (const type of channelTypes) {
                 const channelId = config.discord.channels[type];
@@ -248,7 +249,7 @@ class DiscordClient {
         try {
             if (this.channels.status) {
                 // Edit the specific status message instead of sending new ones
-                const statusMessageId = '1411381289789030463';
+                const statusMessageId = '1412069519320416409';
                 try {
                     const message = await this.channels.status.messages.fetch(statusMessageId);
                     await message.edit({ embeds: [embed] });
@@ -260,6 +261,48 @@ class DiscordClient {
         } catch (error) {
             logger.error('Failed to send status embed:', error.message || error);
             // Don't requeue status embeds to avoid spam
+        }
+    }
+
+    async sendPlayerListEmbed(players) {
+        const embed = new EmbedBuilder()
+            .setColor(0x00FF00)
+            .setTitle('🎮 Online Players')
+            .setDescription(players.length > 0 ? players.map(player => `👤 ${player}`).join('\n') : '🚫 No players online')
+            .addFields(
+                { name: '📊 Total Players', value: `${players.length}`, inline: true },
+                { name: '🕒 Last Updated', value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: true }
+            )
+            .setTimestamp()
+            .setFooter({ text: 'Player List • Updates automatically' });
+
+        if (!this.isConnected) {
+            this.messageQueue.push({embed, channelType: 'playerList'});
+            return;
+        }
+
+        try {
+            if (this.channels.playerList) {
+                if (config.discord.playerListMessageId) {
+                    // Try to edit existing message
+                    try {
+                        const message = await this.channels.playerList.messages.fetch(config.discord.playerListMessageId);
+                        await message.edit({ embeds: [embed] });
+                        logger.info('✅ Player list updated successfully');
+                    } catch (fetchError) {
+                        // If message doesn't exist, send new one
+                        const sentMessage = await this.channels.playerList.send({ embeds: [embed] });
+                        logger.warn(`⚠️ Created new player list message. Update config with message ID: ${sentMessage.id}`);
+                    }
+                } else {
+                    // Send new message and log the ID
+                    const sentMessage = await this.channels.playerList.send({ embeds: [embed] });
+                    logger.warn(`⚠️ Player list message sent. Add this to your config: DISCORD_PLAYER_LIST_MESSAGE_ID=${sentMessage.id}`);
+                }
+            }
+        } catch (error) {
+            logger.error('Failed to send player list embed:', error.message || error);
+            this.messageQueue.unshift({embed, channelType: 'playerList'});
         }
     }
 

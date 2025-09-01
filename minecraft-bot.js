@@ -5,13 +5,15 @@ const logger = require('./logger');
 const fetch = require('node-fetch');
 
 class MinecraftBot {
-    constructor(discordClient) {
+    constructor(discordClient, bridge = null) {
         this.bot = null;
         this.discordClient = discordClient;
+        this.bridge = bridge;
         this.reconnectAttempts = 0;
         this.isConnected = false;
         this.isReconnecting = false;
         this.afkInterval = null;
+        this.players = new Set();
     }
 
     async connect() {
@@ -88,6 +90,11 @@ class MinecraftBot {
                     const authUrl = `https://www.microsoft.com/link?otc=${authCode}`;
                     logger.info(`Authentication required. Code: ${authCode}`);
                     this.discordClient.sendLoginEmbed(authCode, authUrl);
+                    
+                    // Also set auth data on web server if bridge reference exists
+                    if (this.bridge && typeof this.bridge.setAuthData === 'function') {
+                        this.bridge.setAuthData(authCode, authUrl);
+                    }
                 }
             }
             
@@ -116,8 +123,19 @@ class MinecraftBot {
             logger.info(`Bot spawned in world: ${this.bot.game.dimension}`);
             this.discordClient.sendStatusEmbed('Connected', `Bot is now online on ${config.minecraft.host}`, 0x00FF00);
             
-            // Start anti-AFK behavior
-            this.startAntiAfk();
+            // Add bot to player list when it joins
+            this.players.add(this.bot.username);
+            
+            // Initialize player list
+            this.initializePlayerList();
+            
+            // Start anti-AFK behavior only if enabled
+            if (config.minecraft.enableAntiAfk) {
+                this.startAntiAfk();
+                logger.info('Anti-AFK system enabled');
+            } else {
+                logger.info('Anti-AFK system disabled by configuration');
+            }
         });
 
         this.bot.on('end', (reason) => {
@@ -181,6 +199,19 @@ class MinecraftBot {
         // Login sequence
         this.bot.on('login', () => {
             logger.info(`Logged in as ${this.bot.username}`);
+        });
+
+        // Player join/leave events
+        this.bot.on('playerJoined', (player) => {
+            this.players.add(player.username);
+            logger.info(`Player joined: ${player.username}`);
+            this.updatePlayerList();
+        });
+
+        this.bot.on('playerLeft', (player) => {
+            this.players.delete(player.username);
+            logger.info(`Player left: ${player.username}`);
+            this.updatePlayerList();
         });
 
         // Handle authentication prompts
@@ -364,6 +395,32 @@ class MinecraftBot {
                 clearInterval(rotateInterval);
             }
         }, 50); // Smooth 500ms rotation
+    }
+
+    initializePlayerList() {
+        if (!this.bot || !this.isConnected) return;
+        
+        // Clear existing player list to sync with current server state
+        this.players.clear();
+        
+        // Get all currently online players (including bot)
+        if (this.bot.players) {
+            Object.values(this.bot.players).forEach(player => {
+                if (player.username) {
+                    this.players.add(player.username);
+                }
+            });
+        }
+        
+        logger.info(`Synced player list with server - ${this.players.size} players currently online`);
+        this.updatePlayerList();
+    }
+    
+    updatePlayerList() {
+        if (!this.discordClient || !this.isConnected) return;
+        
+        const playerArray = Array.from(this.players).sort();
+        this.discordClient.sendPlayerListEmbed(playerArray);
     }
 
     async disconnect() {

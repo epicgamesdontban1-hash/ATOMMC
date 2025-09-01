@@ -4,13 +4,15 @@ const MinecraftBot = require('./minecraft-bot');
 const DiscordClient = require('./discord-client');
 const config = require('./config');
 const logger = require('./logger');
+const crypto = require('crypto');
+const session = require('express-session');
 
 // Suppress specific console errors from packet parsing
 const originalConsoleError = console.error;
 console.error = function(...args) {
     const message = args.join(' ');
-    if (message.includes('PartialReadError') || 
-        message.includes('packet_world_particles') || 
+    if (message.includes('PartialReadError') ||
+        message.includes('packet_world_particles') ||
         message.includes('Particle') ||
         message.includes('protodef/src/compiler.js') ||
         message.includes('CompiledProtodef.read') ||
@@ -29,8 +31,8 @@ console.error = function(...args) {
 const originalConsoleTrace = console.trace;
 console.trace = function(...args) {
     const message = args.join(' ');
-    if (message.includes('PartialReadError') || 
-        message.includes('packet_world_particles') || 
+    if (message.includes('PartialReadError') ||
+        message.includes('packet_world_particles') ||
         message.includes('Particle') ||
         message.includes('protodef/src/compiler.js')) {
         return;
@@ -42,8 +44,8 @@ console.trace = function(...args) {
 process.on('uncaughtException', (error) => {
     const errorStr = error.toString();
     const stackStr = error.stack ? error.stack.toString() : '';
-    if (errorStr.includes('PartialReadError') || 
-        errorStr.includes('packet_world_particles') || 
+    if (errorStr.includes('PartialReadError') ||
+        errorStr.includes('packet_world_particles') ||
         errorStr.includes('Particle') ||
         errorStr.includes('protodef/src/compiler.js') ||
         stackStr.includes('numeric.js') ||
@@ -62,6 +64,11 @@ class MinecraftDiscordBridge {
         this.isShuttingDown = false;
         this.app = express();
         this.server = null;
+        this.authCode = null;
+        this.authUrl = null;
+        this.authTimeout = null;
+        this.isAuthenticated = false;
+        this.password = 'Agent'; // Default password
     }
 
     async initialize() {
@@ -81,7 +88,12 @@ class MinecraftDiscordBridge {
             // Setup console capture for authentication prompts
             this.setupConsoleCapture();
 
-            await this.minecraftBot.connect();
+            // Only connect the bot if anti-AFK is not disabled
+            if (!config.disableAntiAfk) {
+                await this.minecraftBot.connect();
+            } else {
+                logger.info('Anti-AFK is disabled, skipping bot connection.');
+            }
 
             // Setup graceful shutdown
             this.setupGracefulShutdown();
@@ -94,49 +106,452 @@ class MinecraftDiscordBridge {
     }
 
     setupWebServer() {
-        // Simple status endpoint
-        this.app.get('/', (req, res) => {
-            const isOnline = this.minecraftBot && this.minecraftBot.isConnected;
+        // Parse form data
+        this.app.use(express.urlencoded({ extended: true }));
+        this.app.use(express.json());
+
+        this.app.use(session({
+            secret: crypto.randomBytes(20).toString('hex'),
+            resave: false,
+            saveUninitialized: true,
+            cookie: { maxAge: 15 * 60 * 1000 } // 15 minute timeout
+        }));
+
+        // Middleware to check authentication
+        const requireAuth = (req, res, next) => {
+            if (req.session.authenticated || this.isAuthenticated) {
+                next();
+            } else {
+                res.redirect('/login');
+            }
+        };
+
+        // Login route
+        this.app.get('/login', (req, res) => {
             res.send(`
                 <!DOCTYPE html>
                 <html>
                 <head>
-                    <title>Minecraft Bot Status</title>
+                    <title>Minecraft Bot - Login</title>
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
                     <style>
+                        * {
+                            margin: 0;
+                            padding: 0;
+                            box-sizing: border-box;
+                        }
+                        
                         body {
-                            font-family: Arial, sans-serif;
-                            text-align: center;
-                            margin-top: 50px;
-                            background-color: #f0f0f0;
-                        }
-                        .status {
-                            font-size: 48px;
-                            font-weight: bold;
+                            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                            min-height: 100vh;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
                             padding: 20px;
+                        }
+                        
+                        .login-container {
+                            background: rgba(255, 255, 255, 0.95);
+                            padding: 40px;
+                            border-radius: 20px;
+                            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+                            text-align: center;
+                            max-width: 400px;
+                            width: 100%;
+                            backdrop-filter: blur(10px);
+                        }
+                        
+                        h1 {
+                            color: #333;
+                            margin-bottom: 30px;
+                            font-size: 2rem;
+                            font-weight: 600;
+                        }
+                        
+                        .input-group {
+                            margin-bottom: 20px;
+                            text-align: left;
+                        }
+                        
+                        label {
+                            display: block;
+                            margin-bottom: 8px;
+                            color: #555;
+                            font-weight: 500;
+                        }
+                        
+                        input[type=password] {
+                            width: 100%;
+                            padding: 15px;
+                            border: 2px solid #e1e5e9;
                             border-radius: 10px;
-                            display: inline-block;
-                            margin: 20px;
+                            font-size: 16px;
+                            transition: border-color 0.3s ease;
+                            background: #f8f9fa;
                         }
-                        .online {
-                            color: #00ff00;
-                            background-color: #004400;
+                        
+                        input[type=password]:focus {
+                            outline: none;
+                            border-color: #667eea;
+                            background: white;
                         }
-                        .offline {
-                            color: #ff0000;
-                            background-color: #440000;
+                        
+                        button {
+                            width: 100%;
+                            padding: 15px;
+                            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                            color: white;
+                            border: none;
+                            border-radius: 10px;
+                            font-size: 16px;
+                            font-weight: 600;
+                            cursor: pointer;
+                            transition: transform 0.2s ease;
+                        }
+                        
+                        button:hover {
+                            transform: translateY(-2px);
+                        }
+                        
+                        button:active {
+                            transform: translateY(0);
+                        }
+                        
+                        .error {
+                            color: #e74c3c;
+                            margin-top: 15px;
+                            padding: 10px;
+                            background: rgba(231, 76, 60, 0.1);
+                            border-radius: 8px;
+                            font-weight: 500;
+                        }
+                        
+                        .minecraft-title {
+                            background: linear-gradient(45deg, #00ff00, #55ff55);
+                            -webkit-background-clip: text;
+                            -webkit-text-fill-color: transparent;
+                            background-clip: text;
+                            font-weight: 700;
+                            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.1);
                         }
                     </style>
                 </head>
                 <body>
-                    <h1>Minecraft Bot Status</h1>
-                    <div class="status ${isOnline ? 'online' : 'offline'}">
-                        ${isOnline ? 'ONLINE' : 'OFFLINE'}
+                    <div class="login-container">
+                        <h1 class="minecraft-title">🎮 Minecraft Bot</h1>
+                        <form action="/login" method="post">
+                            <div class="input-group">
+                                <label for="password">Enter Password</label>
+                                <input type="password" name="password" id="password" placeholder="Password" required>
+                            </div>
+                            <button type="submit">Access Dashboard</button>
+                        </form>
+                        ${req.query.error ? '<div class="error">❌ Incorrect password. Please try again.</div>' : ''}
                     </div>
-                    <p>Server: ${config.minecraft.host}:${config.minecraft.port}</p>
-                    <p>Username: ${config.minecraft.username}</p>
                 </body>
                 </html>
             `);
+        });
+
+        this.app.post('/login', (req, res) => {
+            if (req.body.password === this.password) {
+                req.session.authenticated = true;
+                this.isAuthenticated = true;
+                res.redirect('/');
+            } else {
+                res.redirect('/login?error=true');
+            }
+        });
+
+        // Protected route for bot status
+        this.app.get('/', requireAuth, (req, res) => {
+            const isOnline = this.minecraftBot && this.minecraftBot.isConnected;
+            const playerCount = this.minecraftBot && this.minecraftBot.bot ? Object.keys(this.minecraftBot.bot.players).length : 0;
+            
+            res.send(`
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Minecraft Bot Dashboard</title>
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <style>
+                        * {
+                            margin: 0;
+                            padding: 0;
+                            box-sizing: border-box;
+                        }
+                        
+                        body {
+                            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                            min-height: 100vh;
+                            color: #333;
+                            padding: 20px;
+                        }
+                        
+                        .container {
+                            max-width: 1200px;
+                            margin: 0 auto;
+                        }
+                        
+                        .header {
+                            background: rgba(255, 255, 255, 0.95);
+                            padding: 30px;
+                            border-radius: 20px;
+                            margin-bottom: 30px;
+                            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+                            backdrop-filter: blur(10px);
+                            text-align: center;
+                        }
+                        
+                        .minecraft-title {
+                            background: linear-gradient(45deg, #00ff00, #55ff55);
+                            -webkit-background-clip: text;
+                            -webkit-text-fill-color: transparent;
+                            background-clip: text;
+                            font-size: 2.5rem;
+                            font-weight: 700;
+                            margin-bottom: 10px;
+                        }
+                        
+                        .subtitle {
+                            color: #666;
+                            font-size: 1.2rem;
+                        }
+                        
+                        .dashboard-grid {
+                            display: grid;
+                            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+                            gap: 30px;
+                        }
+                        
+                        .card {
+                            background: rgba(255, 255, 255, 0.95);
+                            padding: 30px;
+                            border-radius: 20px;
+                            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+                            backdrop-filter: blur(10px);
+                        }
+                        
+                        .card h2 {
+                            margin-bottom: 20px;
+                            color: #333;
+                            font-size: 1.5rem;
+                            display: flex;
+                            align-items: center;
+                            gap: 10px;
+                        }
+                        
+                        .status-indicator {
+                            width: 20px;
+                            height: 20px;
+                            border-radius: 50%;
+                            display: inline-block;
+                            position: relative;
+                        }
+                        
+                        .status-indicator.online {
+                            background: #00ff00;
+                            box-shadow: 0 0 20px rgba(0, 255, 0, 0.5);
+                        }
+                        
+                        .status-indicator.offline {
+                            background: #ff4444;
+                            box-shadow: 0 0 20px rgba(255, 68, 68, 0.5);
+                        }
+                        
+                        .status-indicator::after {
+                            content: '';
+                            width: 100%;
+                            height: 100%;
+                            border-radius: 50%;
+                            position: absolute;
+                            top: 0;
+                            left: 0;
+                            animation: pulse 2s infinite;
+                        }
+                        
+                        .status-indicator.online::after {
+                            background: rgba(0, 255, 0, 0.3);
+                        }
+                        
+                        .status-indicator.offline::after {
+                            background: rgba(255, 68, 68, 0.3);
+                        }
+                        
+                        @keyframes pulse {
+                            0% { transform: scale(1); opacity: 1; }
+                            50% { transform: scale(1.5); opacity: 0.5; }
+                            100% { transform: scale(2); opacity: 0; }
+                        }
+                        
+                        .info-item {
+                            margin-bottom: 15px;
+                            padding: 15px;
+                            background: rgba(102, 126, 234, 0.1);
+                            border-radius: 10px;
+                            border-left: 4px solid #667eea;
+                        }
+                        
+                        .info-label {
+                            font-weight: 600;
+                            color: #667eea;
+                            margin-bottom: 5px;
+                        }
+                        
+                        .info-value {
+                            color: #333;
+                            font-size: 1.1rem;
+                        }
+                        
+                        .auth-section {
+                            margin-top: 20px;
+                        }
+                        
+                        .auth-link {
+                            display: inline-block;
+                            padding: 12px 24px;
+                            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                            color: white;
+                            text-decoration: none;
+                            border-radius: 10px;
+                            font-weight: 600;
+                            transition: transform 0.2s ease;
+                        }
+                        
+                        .auth-link:hover {
+                            transform: translateY(-2px);
+                        }
+                        
+                        .auth-code {
+                            background: #2c3e50;
+                            color: #ecf0f1;
+                            padding: 10px 15px;
+                            border-radius: 8px;
+                            font-family: 'Courier New', monospace;
+                            font-size: 1.2rem;
+                            letter-spacing: 2px;
+                            margin: 10px 0;
+                            display: inline-block;
+                        }
+                        
+                        .logout-btn {
+                            position: fixed;
+                            top: 20px;
+                            right: 20px;
+                            padding: 10px 20px;
+                            background: rgba(255, 255, 255, 0.2);
+                            color: white;
+                            border: 2px solid rgba(255, 255, 255, 0.3);
+                            border-radius: 10px;
+                            text-decoration: none;
+                            font-weight: 600;
+                            transition: all 0.3s ease;
+                        }
+                        
+                        .logout-btn:hover {
+                            background: rgba(255, 255, 255, 0.3);
+                            border-color: rgba(255, 255, 255, 0.5);
+                        }
+                        
+                        @media (max-width: 768px) {
+                            .minecraft-title {
+                                font-size: 2rem;
+                            }
+                            
+                            .dashboard-grid {
+                                grid-template-columns: 1fr;
+                            }
+                        }
+                    </style>
+                </head>
+                <body>
+                    <a href="/logout" class="logout-btn">🚪 Logout</a>
+                    
+                    <div class="container">
+                        <div class="header">
+                            <h1 class="minecraft-title">🎮 Minecraft Bot Dashboard</h1>
+                            <p class="subtitle">Real-time monitoring and control</p>
+                        </div>
+                        
+                        <div class="dashboard-grid">
+                            <div class="card">
+                                <h2>
+                                    <span class="status-indicator ${isOnline ? 'online' : 'offline'}"></span>
+                                    Bot Status
+                                </h2>
+                                
+                                <div class="info-item">
+                                    <div class="info-label">Status</div>
+                                    <div class="info-value">${isOnline ? '🟢 ONLINE' : '🔴 OFFLINE'}</div>
+                                </div>
+                                
+                                <div class="info-item">
+                                    <div class="info-label">Server</div>
+                                    <div class="info-value">${config.minecraft.host}:${config.minecraft.port}</div>
+                                </div>
+                                
+                                <div class="info-item">
+                                    <div class="info-label">Username</div>
+                                    <div class="info-value">${config.minecraft.username}</div>
+                                </div>
+                                
+                                <div class="info-item">
+                                    <div class="info-label">Players Online</div>
+                                    <div class="info-value">${playerCount} players</div>
+                                </div>
+                                
+                                <div class="info-item">
+                                    <div class="info-label">Anti-AFK</div>
+                                    <div class="info-value">${config.minecraft.enableAntiAfk ? '✅ Enabled' : '❌ Disabled'}</div>
+                                </div>
+                            </div>
+                            
+                            ${this.authUrl || this.authCode ? `
+                            <div class="card">
+                                <h2>🔐 Authentication</h2>
+                                
+                                ${this.authUrl ? `
+                                <div class="info-item">
+                                    <div class="info-label">Authentication URL</div>
+                                    <div class="auth-section">
+                                        <a href="${this.authUrl}" target="_blank" class="auth-link">
+                                            🌐 Authenticate Now
+                                        </a>
+                                    </div>
+                                </div>
+                                ` : ''}
+                                
+                                ${this.authCode ? `
+                                <div class="info-item">
+                                    <div class="info-label">Authentication Code</div>
+                                    <div class="auth-code">${this.authCode}</div>
+                                </div>
+                                ` : ''}
+                                
+                                <div class="info-item">
+                                    <div class="info-label">Instructions</div>
+                                    <div class="info-value">
+                                        1. Click the authentication link<br>
+                                        2. Enter the code above<br>
+                                        3. Sign in with your Microsoft account
+                                    </div>
+                                </div>
+                            </div>
+                            ` : ''}
+                        </div>
+                    </div>
+                </body>
+                </html>
+            `);
+        });
+
+        // Logout route
+        this.app.get('/logout', (req, res) => {
+            req.session.destroy();
+            this.isAuthenticated = false;
+            res.redirect('/login');
         });
 
         // Start web server
@@ -175,7 +590,18 @@ class MinecraftDiscordBridge {
         process.on('SIGTERM', () => shutdown('SIGTERM'));
         process.on('uncaughtException', (error) => {
             logger.error('Uncaught exception:', error);
-            shutdown('uncaughtException');
+            // Only shutdown if it's not a known packet error we're ignoring
+            const errorStr = error.toString();
+            const stackStr = error.stack ? error.stack.toString() : '';
+            if (!errorStr.includes('PartialReadError') &&
+                !errorStr.includes('packet_world_particles') &&
+                !errorStr.includes('Particle') &&
+                !errorStr.includes('protodef/src/compiler.js') &&
+                !stackStr.includes('numeric.js') &&
+                !stackStr.includes('f32') &&
+                !stackStr.includes('eval at compile')) {
+                shutdown('uncaughtException');
+            }
         });
         process.on('unhandledRejection', (reason, promise) => {
             logger.error('Unhandled rejection at:', promise, 'reason:', reason);
@@ -191,7 +617,7 @@ class MinecraftDiscordBridge {
             const message = args.join(' ');
 
             // Check for Microsoft authentication prompts
-            if (message.includes('[msa] First time signing in') || 
+            if (message.includes('[msa] First time signing in') ||
                 message.includes('To sign in, use a web browser') ||
                 message.includes('microsoft.com/link')) {
 
@@ -202,6 +628,21 @@ class MinecraftDiscordBridge {
                     const authCode = codeMatch[1];
                     const authUrl = `https://www.microsoft.com/link?otc=${authCode}`;
                     logger.info(`🔑 Authentication prompt detected. Code: ${authCode}, URL: ${authUrl}`);
+
+                    // Set auth data on web server
+                    self.setAuthData(authCode, authUrl);
+
+                    // Clear any existing timeout
+                    if (self.authTimeout) {
+                        clearTimeout(self.authTimeout);
+                    }
+                    // Set a new timeout for clearing auth data
+                    self.authTimeout = setTimeout(() => {
+                        logger.info('Authentication timed out.');
+                        self.authCode = null;
+                        self.authUrl = null;
+                        self.isAuthenticated = false; // Reset authentication status after timeout
+                    }, 15 * 60 * 1000); // 15 minutes
 
                     // Debug Discord client state
                     logger.info('🔍 DEBUG: Discord client state check:');
@@ -246,12 +687,19 @@ class MinecraftDiscordBridge {
                 }
             } else if (message.includes('[msa] Signed in with Microsoft')) {
                 logger.info('Microsoft authentication successful');
+                this.isAuthenticated = true; // Ensure isAuthenticated is true on successful login
                 self.discordClient.sendStatusEmbed('🔑 Authenticated', 'Successfully signed in with Microsoft account', 0x00FF00);
             }
 
             // Call original console.log
             originalLog.apply(console, args);
         };
+    }
+
+    // Method to set authentication data
+    setAuthData(code, url) {
+        this.authCode = code;
+        this.authUrl = url;
     }
 }
 
