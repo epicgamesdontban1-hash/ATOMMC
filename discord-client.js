@@ -249,7 +249,7 @@ class DiscordClient {
         try {
             if (this.channels.status) {
                 // Edit the specific status message instead of sending new ones
-                const statusMessageId = '1412069519320416409';
+                const statusMessageId = '1411381289789030463';
                 try {
                     const message = await this.channels.status.messages.fetch(statusMessageId);
                     await message.edit({ embeds: [embed] });
