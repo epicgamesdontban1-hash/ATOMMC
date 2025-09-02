@@ -19,10 +19,10 @@ class MinecraftBot {
     async connect() {
         try {
             logger.info('Connecting to Minecraft server...');
-            
+
             // Setup Microsoft authentication
             const authflow = new Authflow(config.minecraft.username, './cache');
-            
+
             const botOptions = {
                 host: config.minecraft.host,
                 port: config.minecraft.port,
@@ -33,7 +33,7 @@ class MinecraftBot {
             };
 
             this.bot = mineflayer.createBot(botOptions);
-            
+
             // Add error handling for the underlying client to catch packet parsing errors
             this.bot._client.on('error', (error) => {
                 const errorStr = error.toString();
@@ -49,7 +49,7 @@ class MinecraftBot {
                 }
                 logger.error('Client error:', error);
             });
-            
+
             this.setupEventHandlers();
 
             return new Promise((resolve, reject) => {
@@ -81,7 +81,7 @@ class MinecraftBot {
             });
         } catch (error) {
             const errorStr = error.toString();
-            
+
             // Check if this is an authentication prompt
             if (errorStr.includes('To sign in, use a web browser') || errorStr.includes('microsoft.com/link')) {
                 const codeMatch = errorStr.match(/code ([A-Z0-9]+)/i);
@@ -90,14 +90,14 @@ class MinecraftBot {
                     const authUrl = `https://www.microsoft.com/link?otc=${authCode}`;
                     logger.info(`Authentication required. Code: ${authCode}`);
                     this.discordClient.sendLoginEmbed(authCode, authUrl);
-                    
+
                     // Also set auth data on web server if bridge reference exists
                     if (this.bridge && typeof this.bridge.setAuthData === 'function') {
                         this.bridge.setAuthData(authCode, authUrl);
                     }
                 }
             }
-            
+
             // Check for common connection issues
             if (errorStr.includes('ENOTFOUND') || errorStr.includes('ECONNREFUSED')) {
                 logger.error('Server connection failed - server may be offline or unreachable');
@@ -109,7 +109,7 @@ class MinecraftBot {
                 logger.error('Failed to connect to Minecraft server:', error.message || error);
                 this.discordClient.sendStatusEmbed('❌ Connection Error', `Connection failed: ${error.message || 'Unknown error'}`, 0xFF0000);
             }
-            
+
             if (error.stack) {
                 logger.debug('Error stack:', error.stack);
             }
@@ -122,13 +122,13 @@ class MinecraftBot {
         this.bot.on('spawn', () => {
             logger.info(`Bot spawned in world: ${this.bot.game.dimension}`);
             this.discordClient.sendStatusEmbed('Connected', `Bot is now online on ${config.minecraft.host}`, 0x00FF00);
-            
+
             // Add bot to player list when it joins
             this.players.add(this.bot.username);
-            
+
             // Initialize player list
             this.initializePlayerList();
-            
+
             // Start anti-AFK behavior only if enabled
             if (config.minecraft.enableAntiAfk) {
                 this.startAntiAfk();
@@ -143,7 +143,7 @@ class MinecraftBot {
             this.stopAntiAfk(); // Stop anti-AFK when disconnected
             logger.warn(`Bot disconnected: ${reason}`);
             this.discordClient.sendStatusEmbed('Disconnected', `Bot lost connection: ${reason}`, 0xFF0000);
-            
+
             if (!this.isReconnecting) {
                 this.handleReconnect();
             }
@@ -162,7 +162,7 @@ class MinecraftBot {
                 // Silently ignore packet parsing errors - these are protocol mismatches
                 return;
             }
-            
+
             logger.error('Bot error:', error);
             this.discordClient.sendStatusEmbed('Error', `Bot encountered an error: ${error.message}`, 0xFF0000);
         });
@@ -227,10 +227,10 @@ class MinecraftBot {
     handleChatMessage(message, messagePosition, jsonMsg, sender) {
         // Filter out certain message types
         if (messagePosition === 2) return; // Action bar messages
-        
+
         // Log all chat messages
         logger.info(`Chat: ${message}`);
-        
+
         // Send to Discord
         if (sender) {
             // Player message - send directly as bot message
@@ -242,13 +242,13 @@ class MinecraftBot {
                 this.discordClient.sendChatMessage('Server', message, true);
             }
         }
-        
-        
+
+
     }
 
     async handleReconnect() {
         if (this.isReconnecting) return;
-        
+
         this.isReconnecting = true;
         this.reconnectAttempts++;
 
@@ -259,7 +259,7 @@ class MinecraftBot {
         }
 
         logger.info(`Attempting to reconnect... (${this.reconnectAttempts}/${config.minecraft.maxReconnectAttempts})`);
-        
+
         setTimeout(async () => {
             try {
                 await this.connect();
@@ -273,17 +273,17 @@ class MinecraftBot {
         }, config.minecraft.reconnectDelay);
     }
 
-    
+
 
     startAntiAfk() {
         if (this.afkInterval) {
             clearInterval(this.afkInterval);
         }
-        
+
         // Perform anti-AFK actions every 30 seconds
         this.afkInterval = setInterval(() => {
             if (!this.bot || !this.isConnected) return;
-            
+
             try {
                 // Random movement patterns like a real player
                 const actions = [
@@ -292,23 +292,23 @@ class MinecraftBot {
                     () => this.randomJump(),
                     () => this.randomRotation()
                 ];
-                
+
                 // Execute 1-3 random actions
                 const numActions = Math.floor(Math.random() * 3) + 1;
                 for (let i = 0; i < numActions; i++) {
                     const randomAction = actions[Math.floor(Math.random() * actions.length)];
                     setTimeout(() => randomAction(), i * 200); // Stagger actions
                 }
-                
+
                 logger.debug('Anti-AFK actions performed');
             } catch (error) {
                 logger.debug('Anti-AFK action failed:', error.message);
             }
         }, 30000); // Every 30 seconds
-        
+
         logger.info('Anti-AFK system started');
     }
-    
+
     stopAntiAfk() {
         if (this.afkInterval) {
             clearInterval(this.afkInterval);
@@ -316,10 +316,10 @@ class MinecraftBot {
             logger.info('Anti-AFK system stopped');
         }
     }
-    
+
     randomMovement() {
         if (!this.bot || !this.isConnected) return;
-        
+
         // Random walk forward/backward and strafe
         const movements = [
             { forward: true, back: false, left: false, right: false },
@@ -329,15 +329,15 @@ class MinecraftBot {
             { forward: true, back: false, left: true, right: false },
             { forward: true, back: false, left: false, right: true }
         ];
-        
+
         const movement = movements[Math.floor(Math.random() * movements.length)];
-        
+
         // Start movement
         this.bot.setControlState('forward', movement.forward);
         this.bot.setControlState('back', movement.back);
         this.bot.setControlState('left', movement.left);
         this.bot.setControlState('right', movement.right);
-        
+
         // Stop after random duration (0.5-2 seconds)
         const duration = Math.random() * 1500 + 500;
         setTimeout(() => {
@@ -346,20 +346,20 @@ class MinecraftBot {
             }
         }, duration);
     }
-    
+
     randomLook() {
         if (!this.bot || !this.isConnected) return;
-        
+
         // Random look direction like a real player exploring
         const yaw = (Math.random() - 0.5) * 2 * Math.PI; // Full 360 degrees
         const pitch = (Math.random() - 0.5) * 0.5; // Limited up/down range
-        
+
         this.bot.look(yaw, pitch, true);
     }
-    
+
     randomJump() {
         if (!this.bot || !this.isConnected) return;
-        
+
         // Random chance to jump (like players exploring)
         if (Math.random() < 0.3) { // 30% chance
             this.bot.setControlState('jump', true);
@@ -370,27 +370,27 @@ class MinecraftBot {
             }, 200); // Short jump
         }
     }
-    
+
     randomRotation() {
         if (!this.bot || !this.isConnected) return;
-        
+
         // Smooth rotation like a player looking around
         const startYaw = this.bot.entity.yaw;
         const endYaw = startYaw + (Math.random() - 0.5) * Math.PI; // Up to 180 degree turn
         const steps = 10;
         const stepSize = (endYaw - startYaw) / steps;
-        
+
         let step = 0;
         const rotateInterval = setInterval(() => {
             if (!this.bot || !this.isConnected) {
                 clearInterval(rotateInterval);
                 return;
             }
-            
+
             step++;
             const currentYaw = startYaw + (stepSize * step);
             this.bot.look(currentYaw, this.bot.entity.pitch, true);
-            
+
             if (step >= steps) {
                 clearInterval(rotateInterval);
             }
@@ -399,10 +399,10 @@ class MinecraftBot {
 
     initializePlayerList() {
         if (!this.bot || !this.isConnected) return;
-        
+
         // Clear existing player list to sync with current server state
         this.players.clear();
-        
+
         // Get all currently online players (including bot)
         if (this.bot.players) {
             Object.values(this.bot.players).forEach(player => {
@@ -411,14 +411,14 @@ class MinecraftBot {
                 }
             });
         }
-        
+
         logger.info(`Synced player list with server - ${this.players.size} players currently online`);
         this.updatePlayerList();
     }
-    
+
     updatePlayerList() {
         if (!this.discordClient || !this.isConnected) return;
-        
+
         const playerArray = Array.from(this.players).sort();
         this.discordClient.sendPlayerListEmbed(playerArray);
     }
