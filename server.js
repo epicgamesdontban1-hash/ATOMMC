@@ -555,7 +555,7 @@ class MinecraftDiscordBridge {
         });
 
         // Start web server
-        const PORT = process.env.PORT || 5000;
+        const PORT = process.env.PORT || 10000;
         this.server = this.app.listen(PORT, '0.0.0.0', () => {
             logger.info(`Web server running on port ${PORT}`);
         });
