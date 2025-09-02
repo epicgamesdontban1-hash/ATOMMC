@@ -88,12 +88,12 @@ class MinecraftDiscordBridge {
             // Setup console capture for authentication prompts
             this.setupConsoleCapture();
 
-            // Only connect the bot if anti-AFK is not disabled
-            if (!config.disableAntiAfk) {
-                await this.minecraftBot.connect();
-            } else {
-                logger.info('Anti-AFK is disabled, skipping bot connection.');
-            }
+            // Connect the bot (authentication will be handled automatically)
+            logger.info('Starting Minecraft bot connection...');
+            this.minecraftBot.connect().catch((error) => {
+                logger.info('Bot connection failed, likely authentication required:', error.message);
+                // Don't exit, just log and wait for authentication
+            });
 
             // Setup graceful shutdown
             this.setupGracefulShutdown();
