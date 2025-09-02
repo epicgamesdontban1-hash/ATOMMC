@@ -1,4 +1,3 @@
-
 const express = require('express');
 const MinecraftBot = require('./minecraft-bot');
 const DiscordClient = require('./discord-client');
@@ -78,7 +77,15 @@ class MinecraftDiscordBridge {
             // Setup simple web server
             this.setupWebServer();
 
+            // Add debug logging for environment
+            logger.info('Environment check:');
+            logger.info(`- NODE_ENV: ${process.env.NODE_ENV}`);
+            logger.info(`- Platform: ${process.platform}`);
+            logger.info(`- RENDER: ${process.env.RENDER}`);
+            logger.info(`- Is Production: ${process.env.NODE_ENV === 'production' || !!process.env.RENDER}`);
+
             // Initialize Discord client
+            logger.info('Connecting to Discord...');
             this.discordClient = new DiscordClient();
             await this.discordClient.connect();
 
@@ -88,10 +95,29 @@ class MinecraftDiscordBridge {
             // Setup console capture for authentication prompts
             this.setupConsoleCapture();
 
+            // Handle authentication based on environment
+            if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
+                logger.info('Production environment detected - attempting to handle auth differently');
+
+                // In production, we might need to use cached tokens or environment variables
+                // Check if we have pre-stored authentication tokens
+                if (process.env.MC_ACCESS_TOKEN && process.env.MC_REFRESH_TOKEN) {
+                    logger.info('Using stored authentication tokens for production');
+                    // You'll need to modify your MinecraftBot to accept these tokens
+                    if (this.minecraftBot.setAuthTokens) {
+                        this.minecraftBot.setAuthTokens(process.env.MC_ACCESS_TOKEN, process.env.MC_REFRESH_TOKEN);
+                    }
+                } else {
+                    logger.warn('No stored authentication tokens found. Bot will need manual authentication.');
+                    logger.warn('Available env vars:', Object.keys(process.env).filter(key => key.startsWith('MC_') || key.includes('TOKEN')));
+                }
+            }
+
             // Connect the bot (authentication will be handled automatically)
             logger.info('Starting Minecraft bot connection...');
             this.minecraftBot.connect().catch((error) => {
                 logger.info('Bot connection failed, likely authentication required:', error.message);
+                logger.error('Connection error details:', error);
                 // Don't exit, just log and wait for authentication
             });
 
@@ -140,7 +166,7 @@ class MinecraftDiscordBridge {
                             padding: 0;
                             box-sizing: border-box;
                         }
-                        
+
                         body {
                             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
                             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -150,7 +176,7 @@ class MinecraftDiscordBridge {
                             justify-content: center;
                             padding: 20px;
                         }
-                        
+
                         .login-container {
                             background: rgba(255, 255, 255, 0.95);
                             padding: 40px;
@@ -161,26 +187,26 @@ class MinecraftDiscordBridge {
                             width: 100%;
                             backdrop-filter: blur(10px);
                         }
-                        
+
                         h1 {
                             color: #333;
                             margin-bottom: 30px;
                             font-size: 2rem;
                             font-weight: 600;
                         }
-                        
+
                         .input-group {
                             margin-bottom: 20px;
                             text-align: left;
                         }
-                        
+
                         label {
                             display: block;
                             margin-bottom: 8px;
                             color: #555;
                             font-weight: 500;
                         }
-                        
+
                         input[type=password] {
                             width: 100%;
                             padding: 15px;
@@ -190,13 +216,13 @@ class MinecraftDiscordBridge {
                             transition: border-color 0.3s ease;
                             background: #f8f9fa;
                         }
-                        
+
                         input[type=password]:focus {
                             outline: none;
                             border-color: #667eea;
                             background: white;
                         }
-                        
+
                         button {
                             width: 100%;
                             padding: 15px;
@@ -209,15 +235,15 @@ class MinecraftDiscordBridge {
                             cursor: pointer;
                             transition: transform 0.2s ease;
                         }
-                        
+
                         button:hover {
                             transform: translateY(-2px);
                         }
-                        
+
                         button:active {
                             transform: translateY(0);
                         }
-                        
+
                         .error {
                             color: #e74c3c;
                             margin-top: 15px;
@@ -226,7 +252,7 @@ class MinecraftDiscordBridge {
                             border-radius: 8px;
                             font-weight: 500;
                         }
-                        
+
                         .minecraft-title {
                             background: linear-gradient(45deg, #00ff00, #55ff55);
                             -webkit-background-clip: text;
@@ -268,7 +294,7 @@ class MinecraftDiscordBridge {
         this.app.get('/', requireAuth, (req, res) => {
             const isOnline = this.minecraftBot && this.minecraftBot.isConnected;
             const playerCount = this.minecraftBot && this.minecraftBot.bot ? Object.keys(this.minecraftBot.bot.players).length : 0;
-            
+
             res.send(`
                 <!DOCTYPE html>
                 <html>
@@ -281,7 +307,7 @@ class MinecraftDiscordBridge {
                             padding: 0;
                             box-sizing: border-box;
                         }
-                        
+
                         body {
                             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
                             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -289,12 +315,12 @@ class MinecraftDiscordBridge {
                             color: #333;
                             padding: 20px;
                         }
-                        
+
                         .container {
                             max-width: 1200px;
                             margin: 0 auto;
                         }
-                        
+
                         .header {
                             background: rgba(255, 255, 255, 0.95);
                             padding: 30px;
@@ -304,7 +330,7 @@ class MinecraftDiscordBridge {
                             backdrop-filter: blur(10px);
                             text-align: center;
                         }
-                        
+
                         .minecraft-title {
                             background: linear-gradient(45deg, #00ff00, #55ff55);
                             -webkit-background-clip: text;
@@ -314,18 +340,18 @@ class MinecraftDiscordBridge {
                             font-weight: 700;
                             margin-bottom: 10px;
                         }
-                        
+
                         .subtitle {
                             color: #666;
                             font-size: 1.2rem;
                         }
-                        
+
                         .dashboard-grid {
                             display: grid;
                             grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
                             gap: 30px;
                         }
-                        
+
                         .card {
                             background: rgba(255, 255, 255, 0.95);
                             padding: 30px;
@@ -333,7 +359,7 @@ class MinecraftDiscordBridge {
                             box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
                             backdrop-filter: blur(10px);
                         }
-                        
+
                         .card h2 {
                             margin-bottom: 20px;
                             color: #333;
@@ -342,7 +368,7 @@ class MinecraftDiscordBridge {
                             align-items: center;
                             gap: 10px;
                         }
-                        
+
                         .status-indicator {
                             width: 20px;
                             height: 20px;
@@ -350,17 +376,17 @@ class MinecraftDiscordBridge {
                             display: inline-block;
                             position: relative;
                         }
-                        
+
                         .status-indicator.online {
                             background: #00ff00;
                             box-shadow: 0 0 20px rgba(0, 255, 0, 0.5);
                         }
-                        
+
                         .status-indicator.offline {
                             background: #ff4444;
                             box-shadow: 0 0 20px rgba(255, 68, 68, 0.5);
                         }
-                        
+
                         .status-indicator::after {
                             content: '';
                             width: 100%;
@@ -371,21 +397,21 @@ class MinecraftDiscordBridge {
                             left: 0;
                             animation: pulse 2s infinite;
                         }
-                        
+
                         .status-indicator.online::after {
                             background: rgba(0, 255, 0, 0.3);
                         }
-                        
+
                         .status-indicator.offline::after {
                             background: rgba(255, 68, 68, 0.3);
                         }
-                        
+
                         @keyframes pulse {
                             0% { transform: scale(1); opacity: 1; }
                             50% { transform: scale(1.5); opacity: 0.5; }
                             100% { transform: scale(2); opacity: 0; }
                         }
-                        
+
                         .info-item {
                             margin-bottom: 15px;
                             padding: 15px;
@@ -393,22 +419,22 @@ class MinecraftDiscordBridge {
                             border-radius: 10px;
                             border-left: 4px solid #667eea;
                         }
-                        
+
                         .info-label {
                             font-weight: 600;
                             color: #667eea;
                             margin-bottom: 5px;
                         }
-                        
+
                         .info-value {
                             color: #333;
                             font-size: 1.1rem;
                         }
-                        
+
                         .auth-section {
                             margin-top: 20px;
                         }
-                        
+
                         .auth-link {
                             display: inline-block;
                             padding: 12px 24px;
@@ -419,11 +445,11 @@ class MinecraftDiscordBridge {
                             font-weight: 600;
                             transition: transform 0.2s ease;
                         }
-                        
+
                         .auth-link:hover {
                             transform: translateY(-2px);
                         }
-                        
+
                         .auth-code {
                             background: #2c3e50;
                             color: #ecf0f1;
@@ -435,7 +461,7 @@ class MinecraftDiscordBridge {
                             margin: 10px 0;
                             display: inline-block;
                         }
-                        
+
                         .logout-btn {
                             position: fixed;
                             top: 20px;
@@ -449,17 +475,17 @@ class MinecraftDiscordBridge {
                             font-weight: 600;
                             transition: all 0.3s ease;
                         }
-                        
+
                         .logout-btn:hover {
                             background: rgba(255, 255, 255, 0.3);
                             border-color: rgba(255, 255, 255, 0.5);
                         }
-                        
+
                         @media (max-width: 768px) {
                             .minecraft-title {
                                 font-size: 2rem;
                             }
-                            
+
                             .dashboard-grid {
                                 grid-template-columns: 1fr;
                             }
@@ -468,50 +494,50 @@ class MinecraftDiscordBridge {
                 </head>
                 <body>
                     <a href="/logout" class="logout-btn">🚪 Logout</a>
-                    
+
                     <div class="container">
                         <div class="header">
                             <h1 class="minecraft-title">🎮 Minecraft Bot Dashboard</h1>
                             <p class="subtitle">Real-time monitoring and control</p>
                         </div>
-                        
+
                         <div class="dashboard-grid">
                             <div class="card">
                                 <h2>
                                     <span class="status-indicator ${isOnline ? 'online' : 'offline'}"></span>
                                     Bot Status
                                 </h2>
-                                
+
                                 <div class="info-item">
                                     <div class="info-label">Status</div>
                                     <div class="info-value">${isOnline ? '🟢 ONLINE' : '🔴 OFFLINE'}</div>
                                 </div>
-                                
+
                                 <div class="info-item">
                                     <div class="info-label">Server</div>
                                     <div class="info-value">${config.minecraft.host}:${config.minecraft.port}</div>
                                 </div>
-                                
+
                                 <div class="info-item">
                                     <div class="info-label">Username</div>
                                     <div class="info-value">${config.minecraft.username}</div>
                                 </div>
-                                
+
                                 <div class="info-item">
                                     <div class="info-label">Players Online</div>
                                     <div class="info-value">${playerCount} players</div>
                                 </div>
-                                
+
                                 <div class="info-item">
                                     <div class="info-label">Anti-AFK</div>
                                     <div class="info-value">${config.minecraft.enableAntiAfk ? '✅ Enabled' : '❌ Disabled'}</div>
                                 </div>
                             </div>
-                            
+
                             ${this.authUrl || this.authCode ? `
                             <div class="card">
                                 <h2>🔐 Authentication</h2>
-                                
+
                                 ${this.authUrl ? `
                                 <div class="info-item">
                                     <div class="info-label">Authentication URL</div>
@@ -522,14 +548,14 @@ class MinecraftDiscordBridge {
                                     </div>
                                 </div>
                                 ` : ''}
-                                
+
                                 ${this.authCode ? `
                                 <div class="info-item">
                                     <div class="info-label">Authentication Code</div>
                                     <div class="auth-code">${this.authCode}</div>
                                 </div>
                                 ` : ''}
-                                
+
                                 <div class="info-item">
                                     <div class="info-label">Instructions</div>
                                     <div class="info-value">
@@ -611,7 +637,7 @@ class MinecraftDiscordBridge {
 
     setupConsoleCapture() {
         const originalLog = console.log;
-        const self = this;
+        const self = this; // Store reference to class instance
 
         console.log = function(...args) {
             const message = args.join(' ');
@@ -687,8 +713,10 @@ class MinecraftDiscordBridge {
                 }
             } else if (message.includes('[msa] Signed in with Microsoft')) {
                 logger.info('Microsoft authentication successful');
-                this.isAuthenticated = true; // Ensure isAuthenticated is true on successful login
-                self.discordClient.sendStatusEmbed('🔑 Authenticated', 'Successfully signed in with Microsoft account', 0x00FF00);
+                self.isAuthenticated = true; // Fixed: Use self instead of this
+                if (self.discordClient && self.discordClient.sendStatusEmbed) {
+                    self.discordClient.sendStatusEmbed('🔑 Authenticated', 'Successfully signed in with Microsoft account', 0x00FF00);
+                }
             }
 
             // Call original console.log
