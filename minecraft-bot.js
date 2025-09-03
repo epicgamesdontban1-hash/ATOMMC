@@ -419,8 +419,28 @@ class MinecraftBot {
     updatePlayerList() {
         if (!this.discordClient || !this.isConnected) return;
 
-        const playerArray = Array.from(this.players).sort();
-        this.discordClient.sendPlayerListEmbed(playerArray);
+        try {
+            const playerArray = Array.from(this.players).sort();
+            this.discordClient.sendPlayerListEmbed(playerArray);
+        } catch (error) {
+            logger.error('Failed to update player list:', error.message || error);
+            // Don't crash the bot for player list updates
+        }
+    }
+
+    async sendChatMessage(message) {
+        if (!this.bot || !this.isConnected) {
+            throw new Error('Bot is not connected to Minecraft server');
+        }
+        
+        try {
+            // Send message to Minecraft chat
+            this.bot.chat(message);
+            logger.info(`Bot sent message to Minecraft: "${message}"`);
+        } catch (error) {
+            logger.error('Failed to send message to Minecraft:', error);
+            throw error;
+        }
     }
 
     async disconnect() {

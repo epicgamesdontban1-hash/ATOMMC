@@ -1,3 +1,4 @@
+require('dotenv').config();
 
 const config = {
     minecraft: {
@@ -6,8 +7,8 @@ const config = {
         username: process.env.MINECRAFT_USERNAME || 'Hakiiyooo',
         version: process.env.MINECRAFT_VERSION || '1.20.4',
         auth: process.env.MINECRAFT_AUTH || 'microsoft',
-        reconnectDelay: parseInt(process.env.RECONNECT_DELAY) || 5000,
-        maxReconnectAttempts: parseInt(process.env.MAX_RECONNECT_ATTEMPTS) || 10,
+        reconnectDelay: parseInt(process.env.RECONNECT_DELAY) || 15000,
+        maxReconnectAttempts: parseInt(process.env.MAX_RECONNECT_ATTEMPTS) || 100000000,
         enableAntiAfk: process.env.ENABLE_ANTI_AFK === 'true'
     },
     web: {
@@ -17,12 +18,13 @@ const config = {
     discord: {
         token: process.env.DISCORD_BOT_TOKEN,
         channels: {
-            logs: process.env.DISCORD_LOGS_CHANNEL_ID || '1411378345345548442',
+            logs: process.env.DISCORD_LOGS_CHANNEL_ID || '1411683165222862989',
             login: process.env.DISCORD_LOGIN_CHANNEL_ID || '1411379478294298805',
-            status: process.env.DISCORD_STATUS_CHANNEL_ID || '1411379501467832452',
-            playerList: process.env.DISCORD_PLAYER_LIST_CHANNEL_ID || '1412072351251697776'
+            status: process.env.DISCORD_STATUS_CHANNEL_ID || '1411683202128678944',
+            playerList: process.env.DISCORD_PLAYER_LIST_CHANNEL_ID || '1412068774646907014'
         },
-        playerListMessageId: process.env.DISCORD_PLAYER_LIST_MESSAGE_ID || '1412087227831418921',
+        playerListMessageId: process.env.DISCORD_PLAYER_LIST_MESSAGE_ID || '1412069288025526373',
+        statusMessageId: process.env.DISCORD_STATUS_MESSAGE_ID || '',
         webhook: process.env.DISCORD_WEBHOOK_URL || ''
     },
     logging: {

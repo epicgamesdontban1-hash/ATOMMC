@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, ChannelType, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, ChannelType, EmbedBuilder, SlashCommandBuilder, REST, Routes } = require('discord.js');
 const fetch = require('node-fetch');
 const config = require('./config');
 const logger = require('./logger');
@@ -18,6 +18,7 @@ class DiscordClient {
         this.isProcessingQueue = false;
         this.pendingMessages = new Map(); // For batching messages by timestamp
         this.batchTimeout = null;
+        this.minecraftBot = null; // Reference to minecraft bot for sending messages
     }
 
     async connect() {
@@ -40,8 +41,9 @@ class DiscordClient {
                 ]
             });
 
-            this.client.once('ready', () => {
+            this.client.once('ready', async () => {
                 logger.info(`Discord bot logged in as ${this.client.user.tag}`);
+                await this.setupSlashCommands();
                 this.setupChannels();
                 this.isConnected = true;
             });
@@ -55,10 +57,42 @@ class DiscordClient {
                 this.isConnected = false;
             });
 
+            // Handle slash command interactions
+            this.client.on('interactionCreate', async (interaction) => {
+                if (!interaction.isChatInputCommand()) return;
+                await this.handleSlashCommand(interaction);
+            });
+
             await this.client.login(config.discord.token);
         } catch (error) {
             logger.error('Failed to connect to Discord:', error);
             throw error;
+        }
+    }
+
+    async setupSlashCommands() {
+        try {
+            const commands = [
+                new SlashCommandBuilder()
+                    .setName('message')
+                    .setDescription('Send a message to the Minecraft server')
+                    .addStringOption(option =>
+                        option.setName('content')
+                            .setDescription('The message to send')
+                            .setRequired(true)
+                    )
+            ];
+
+            const rest = new REST({ version: '10' }).setToken(config.discord.token);
+            
+            logger.info('Registering slash commands...');
+            await rest.put(
+                Routes.applicationCommands(this.client.user.id),
+                { body: commands.map(command => command.toJSON()) }
+            );
+            logger.info('Slash commands registered successfully');
+        } catch (error) {
+            logger.error('Failed to register slash commands:', error);
         }
     }
 
@@ -134,9 +168,10 @@ class DiscordClient {
 
         try {
             if (this.channels.logs) {
-                // For player messages, send directly as bot message
+                // For player messages, send with player name
                 if (!isServerMessage) {
-                    await this.channels.logs.send(message);
+                    const formattedMessage = `**${playerName}**: ${message}`;
+                    await this.channels.logs.send(formattedMessage);
                 } else {
                     // For server messages, keep embed format
                     const embed = new EmbedBuilder()
@@ -154,6 +189,7 @@ class DiscordClient {
             }
         } catch (error) {
             logger.error('Failed to send chat message:', error.message || error);
+            // Don't re-throw the error to prevent crashes
         }
     }
 
@@ -249,12 +285,17 @@ class DiscordClient {
         try {
             if (this.channels.status) {
                 // Edit the specific status message instead of sending new ones
-                const statusMessageId = '1412069519320416409';
-                try {
-                    const message = await this.channels.status.messages.fetch(statusMessageId);
-                    await message.edit({ embeds: [embed] });
-                } catch (fetchError) {
-                    // If message doesn't exist or can't be edited, send new message
+                const statusMessageId = config.discord.statusMessageId;
+                if (statusMessageId) {
+                    try {
+                        const message = await this.channels.status.messages.fetch(statusMessageId);
+                        await message.edit({ embeds: [embed] });
+                    } catch (fetchError) {
+                        // If message doesn't exist or can't be edited, send new message
+                        await this.channels.status.send({ embeds: [embed] });
+                    }
+                } else {
+                    // Send new message if no status message ID configured
                     await this.channels.status.send({ embeds: [embed] });
                 }
             }
@@ -302,7 +343,7 @@ class DiscordClient {
             }
         } catch (error) {
             logger.error('Failed to send player list embed:', error.message || error);
-            this.messageQueue.unshift({embed, channelType: 'playerList'});
+            // Don't requeue to prevent infinite loops, just log the error
         }
     }
 
@@ -394,11 +435,15 @@ class DiscordClient {
                     const channel = this.channels[item.channelType] || this.channels.logs;
                     if (item.isStatusUpdate && item.channelType === 'status') {
                         // Edit status message instead of sending new ones
-                        const statusMessageId = '1411381289789030463';
-                        try {
-                            const message = await this.channels.status.messages.fetch(statusMessageId);
-                            await message.edit({ embeds: [item.embed] });
-                        } catch {
+                        const statusMessageId = config.discord.statusMessageId;
+                        if (statusMessageId) {
+                            try {
+                                const message = await this.channels.status.messages.fetch(statusMessageId);
+                                await message.edit({ embeds: [item.embed] });
+                            } catch {
+                                await channel.send({ embeds: [item.embed] });
+                            }
+                        } else {
                             await channel.send({ embeds: [item.embed] });
                         }
                     } else {
@@ -420,6 +465,43 @@ class DiscordClient {
         }
 
         this.isProcessingQueue = false;
+    }
+
+    async handleSlashCommand(interaction) {
+        if (interaction.commandName === 'message') {
+            const content = interaction.options.getString('content');
+            
+            try {
+                if (this.minecraftBot && this.minecraftBot.isConnected) {
+                    // Send message to Minecraft
+                    await this.minecraftBot.sendChatMessage(content);
+                    
+                    // Reply to the user
+                    await interaction.reply({ 
+                        content: `Message sent to Minecraft: "${content}"`, 
+                        ephemeral: true 
+                    });
+                    
+                    logger.info(`Discord user sent message to Minecraft: "${content}"`);
+                } else {
+                    await interaction.reply({ 
+                        content: 'Bot is not connected to Minecraft server', 
+                        ephemeral: true 
+                    });
+                }
+            } catch (error) {
+                logger.error('Failed to send message to Minecraft:', error);
+                await interaction.reply({ 
+                    content: 'Failed to send message to Minecraft', 
+                    ephemeral: true 
+                });
+            }
+        }
+    }
+
+    // Method to set minecraft bot reference
+    setMinecraftBot(minecraftBot) {
+        this.minecraftBot = minecraftBot;
     }
 
     async disconnect() {

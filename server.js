@@ -39,22 +39,7 @@ console.trace = function(...args) {
     originalConsoleTrace.apply(console, args);
 };
 
-// Also suppress uncaught exceptions from these specific errors
-process.on('uncaughtException', (error) => {
-    const errorStr = error.toString();
-    const stackStr = error.stack ? error.stack.toString() : '';
-    if (errorStr.includes('PartialReadError') ||
-        errorStr.includes('packet_world_particles') ||
-        errorStr.includes('Particle') ||
-        errorStr.includes('protodef/src/compiler.js') ||
-        stackStr.includes('numeric.js') ||
-        stackStr.includes('f32') ||
-        stackStr.includes('eval at compile')) {
-        // Silently ignore packet parsing uncaught exceptions
-        return;
-    }
-    logger.error('Uncaught exception:', error);
-});
+// Note: Uncaught exception handling is done in setupGracefulShutdown() to avoid duplicates
 
 class MinecraftDiscordBridge {
     constructor() {
@@ -91,6 +76,9 @@ class MinecraftDiscordBridge {
 
             // Initialize Minecraft bot
             this.minecraftBot = new MinecraftBot(this.discordClient);
+            
+            // Connect Discord client to Minecraft bot for slash commands
+            this.discordClient.setMinecraftBot(this.minecraftBot);
 
             // Setup console capture for authentication prompts
             this.setupConsoleCapture();
@@ -581,7 +569,7 @@ class MinecraftDiscordBridge {
         });
 
         // Start web server
-        const PORT = process.env.PORT || 10000;
+        const PORT = process.env.PORT || 5000;
         this.server = this.app.listen(PORT, '0.0.0.0', () => {
             logger.info(`Web server running on port ${PORT}`);
         });
@@ -615,23 +603,31 @@ class MinecraftDiscordBridge {
         process.on('SIGINT', () => shutdown('SIGINT'));
         process.on('SIGTERM', () => shutdown('SIGTERM'));
         process.on('uncaughtException', (error) => {
-            logger.error('Uncaught exception:', error);
-            // Only shutdown if it's not a known packet error we're ignoring
-            const errorStr = error.toString();
-            const stackStr = error.stack ? error.stack.toString() : '';
-            if (!errorStr.includes('PartialReadError') &&
-                !errorStr.includes('packet_world_particles') &&
-                !errorStr.includes('Particle') &&
-                !errorStr.includes('protodef/src/compiler.js') &&
-                !stackStr.includes('numeric.js') &&
-                !stackStr.includes('f32') &&
-                !stackStr.includes('eval at compile')) {
+            // Filter out known packet parsing errors
+            const errorStr = error ? error.toString() : 'Unknown error';
+            const stackStr = error && error.stack ? error.stack.toString() : '';
+            if (errorStr.includes('PartialReadError') ||
+                errorStr.includes('packet_world_particles') ||
+                errorStr.includes('Particle') ||
+                errorStr.includes('protodef/src/compiler.js') ||
+                stackStr.includes('numeric.js') ||
+                stackStr.includes('f32') ||
+                stackStr.includes('eval at compile')) {
+                // Silently ignore packet parsing uncaught exceptions
+                return;
+            }
+            // Only log and shutdown for meaningful errors
+            if (error && (error.message || error.stack || errorStr !== '[object Object]')) {
+                logger.error('Uncaught exception:', error);
                 shutdown('uncaughtException');
             }
         });
         process.on('unhandledRejection', (reason, promise) => {
-            logger.error('Unhandled rejection at:', promise, 'reason:', reason);
-            shutdown('unhandledRejection');
+            // Filter out empty or meaningless rejections
+            if (reason && (reason.message || reason.stack || (typeof reason === 'string' && reason.length > 0))) {
+                logger.error('Unhandled rejection at:', promise, 'reason:', reason);
+                shutdown('unhandledRejection');
+            }
         });
     }
 

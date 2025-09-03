@@ -17,11 +17,17 @@ class Logger {
     }
 
     formatMessage(level, message, ...args) {
-        const timestamp = new Date().toISOString();
+        const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false });
         const formattedArgs = args.map(arg => 
             typeof arg === 'object' ? JSON.stringify(arg, null, 2) : arg
         );
-        return `[${timestamp}] [${level.toUpperCase()}] ${message}${formattedArgs.length > 0 ? ' ' + formattedArgs.join(' ') : ''}`;
+        const levelEmoji = {
+            'ERROR': '❌',
+            'WARN': '⚠️ ',
+            'INFO': '📝',
+            'DEBUG': '🔍'
+        };
+        return `${levelEmoji[level.toUpperCase()] || '📝'} [${timestamp}] ${message}${formattedArgs.length > 0 ? ' ' + formattedArgs.join(' ') : ''}`;
     }
 
     log(level, levelNum, message, ...args) {
