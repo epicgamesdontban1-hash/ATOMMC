@@ -123,6 +123,11 @@ class MinecraftBot {
             logger.info(`Bot spawned in world: ${this.bot.game.dimension}`);
             this.discordClient.sendStatusEmbed('Connected', `Bot is now online on ${config.minecraft.host}`, 0x00FF00);
 
+            // Update Discord bot status to connected
+            if (this.discordClient && this.discordClient.setStatus) {
+                this.discordClient.setStatus('connected', ` - ${this.bot.game.dimension}`);
+            }
+
             // Add bot to player list when it joins
             this.players.add(this.bot.username);
 
@@ -439,6 +444,53 @@ class MinecraftBot {
             logger.info(`Bot sent message to Minecraft: "${message}"`);
         } catch (error) {
             logger.error('Failed to send message to Minecraft:', error);
+            throw error;
+        }
+    }
+
+    async walkForward(blocks) {
+        if (!this.bot || !this.isConnected) {
+            throw new Error('Bot is not connected to Minecraft server');
+        }
+
+        try {
+            logger.info(`Starting to walk ${blocks} blocks forward`);
+            
+            // Calculate approximate time needed (1 block takes about 1 second at normal walking speed)
+            const walkTimePerBlock = 1000; // milliseconds
+            const totalWalkTime = blocks * walkTimePerBlock;
+            
+            // Start walking forward
+            this.bot.setControlState('forward', true);
+            
+            // Stop walking after the calculated time
+            setTimeout(() => {
+                if (this.bot && this.isConnected) {
+                    this.bot.setControlState('forward', false);
+                    logger.info(`Finished walking ${blocks} blocks forward`);
+                    
+                    // Send status update to Discord
+                    if (this.discordClient) {
+                        this.discordClient.sendStatusEmbed(
+                            '🚶 Walk Complete', 
+                            `Bot finished walking ${blocks} blocks forward`, 
+                            0x00FF00
+                        );
+                    }
+                }
+            }, totalWalkTime);
+            
+            // Send immediate status update
+            if (this.discordClient) {
+                this.discordClient.sendStatusEmbed(
+                    '🚶 Walking', 
+                    `Bot is now walking ${blocks} blocks forward`, 
+                    0xFFAA00
+                );
+            }
+            
+        } catch (error) {
+            logger.error('Failed to make bot walk:', error);
             throw error;
         }
     }

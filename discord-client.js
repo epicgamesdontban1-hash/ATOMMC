@@ -33,7 +33,7 @@ class DiscordClient {
         // Use Discord bot
         try {
             logger.info('Connecting to Discord...');
-            
+
             this.client = new Client({
                 intents: [
                     GatewayIntentBits.Guilds,
@@ -46,6 +46,8 @@ class DiscordClient {
                 await this.setupSlashCommands();
                 this.setupChannels();
                 this.isConnected = true;
+                // Set initial status
+                await this.setStatus('startup');
             });
 
             this.client.on('error', (error) => {
@@ -80,11 +82,21 @@ class DiscordClient {
                         option.setName('content')
                             .setDescription('The message to send')
                             .setRequired(true)
+                    ),
+                new SlashCommandBuilder()
+                    .setName('walk')
+                    .setDescription('Make the bot walk forward a specified number of blocks')
+                    .addIntegerOption(option =>
+                        option.setName('blocks')
+                            .setDescription('Number of blocks to walk forward')
+                            .setRequired(true)
+                            .setMinValue(1)
+                            .setMaxValue(100)
                     )
             ];
 
             const rest = new REST({ version: '10' }).setToken(config.discord.token);
-            
+
             logger.info('Registering slash commands...');
             await rest.put(
                 Routes.applicationCommands(this.client.user.id),
@@ -100,11 +112,11 @@ class DiscordClient {
         try {
             // Setup all channels
             const channelTypes = ['logs', 'login', 'status', 'playerList'];
-            
+
             for (const type of channelTypes) {
                 const channelId = config.discord.channels[type];
                 this.channels[type] = await this.client.channels.fetch(channelId);
-                
+
                 if (!this.channels[type]) {
                     throw new Error(`${type.toUpperCase()} channel with ID ${channelId} not found`);
                 }
@@ -115,10 +127,10 @@ class DiscordClient {
 
                 logger.info(`Connected to Discord ${type} channel: #${this.channels[type].name}`);
             }
-            
+
             // Send startup status embed
             await this.sendStatusEmbed('Starting up', 'Minecraft bot is initializing...', 0xFFFF00);
-            
+
             // Process any queued messages
             this.processMessageQueue();
         } catch (error) {
@@ -183,7 +195,7 @@ class DiscordClient {
                         .setDescription(message)
                         .setTimestamp()
                         .setFooter({ text: 'Minecraft Chat' });
-                    
+
                     await this.channels.logs.send({ embeds: [embed] });
                 }
             }
@@ -207,7 +219,7 @@ class DiscordClient {
                 .setDescription(messages.join('\n'))
                 .setTimestamp()
                 .setFooter({ text: 'Minecraft Chat' });
-            
+
             await this.channels.logs.send({ embeds: [embed] });
         } catch (error) {
             logger.error('Failed to send batched messages:', error.message || error);
@@ -222,23 +234,23 @@ class DiscordClient {
 
         const now = Date.now();
         const batchKey = Math.floor(now / 1000); // Group by second
-        
+
         if (!this.pendingMessages.has(batchKey)) {
             this.pendingMessages.set(batchKey, []);
         }
-        
+
         this.pendingMessages.get(batchKey).push(message);
-        
+
         // Clear old batch timeout
         if (this.batchTimeout) {
             clearTimeout(this.batchTimeout);
         }
-        
+
         // Set new timeout to send batched messages
         this.batchTimeout = setTimeout(() => {
             this.flushBatchedMessages();
         }, 1000);
-        
+
         return true; // Message was batched
     }
 
@@ -255,7 +267,7 @@ class DiscordClient {
                     .setDescription(messages[0])
                     .setTimestamp()
                     .setFooter({ text: 'Minecraft Chat' });
-                
+
                 if (this.channels.logs) {
                     await this.channels.logs.send({ embeds: [embed] });
                 }
@@ -264,7 +276,7 @@ class DiscordClient {
                 await this.sendBatchedMessages(messages);
             }
         }
-        
+
         this.pendingMessages.clear();
         this.batchTimeout = null;
     }
@@ -349,7 +361,7 @@ class DiscordClient {
 
     async sendLoginEmbed(authCode, authUrl) {
         logger.info('🔍 DEBUG: sendLoginEmbed called with:', { authCode, authUrl });
-        
+
         const embed = new EmbedBuilder()
             .setColor(0xFF9900)
             .setTitle('🔑 Microsoft Authentication Required')
@@ -373,22 +385,16 @@ class DiscordClient {
 
         logger.info('🔍 DEBUG: Discord is connected, attempting to send to channel');
         logger.info('🔍 DEBUG: Login channel available:', !!this.channels.login);
-        logger.info('🔍 DEBUG: Login channel ID:', this.channels.login?.id);
 
-        try {
-            if (this.channels.login) {
-                logger.info('📤 Sending embed to Discord login channel...');
-                const sentMessage = await this.channels.login.send({ embeds: [embed] });
-                logger.info('✅ Login embed sent successfully! Message ID:', sentMessage.id);
-            } else {
-                logger.error('❌ Login channel not found in channels object');
-                logger.info('🔍 DEBUG: Available channels:', Object.keys(this.channels));
+        if (this.channels.login) {
+            try {
+                await this.channels.login.send({ embeds: [embed] });
+                logger.info('✅ Authentication embed sent to Discord login channel');
+            } catch (error) {
+                logger.error('❌ Failed to send embed to login channel:', error);
             }
-        } catch (error) {
-            logger.error('❌ Failed to send login embed:', error);
-            logger.error('❌ Error stack:', error.stack);
-            logger.warn('⚠️ Re-queueing message due to send failure');
-            this.messageQueue.unshift({embed, channelType: 'login'});
+        } else {
+            logger.warn('⚠️ Login channel not available');
         }
     }
 
@@ -470,18 +476,18 @@ class DiscordClient {
     async handleSlashCommand(interaction) {
         if (interaction.commandName === 'message') {
             const content = interaction.options.getString('content');
-            
+
             try {
                 if (this.minecraftBot && this.minecraftBot.isConnected) {
                     // Send message to Minecraft
                     await this.minecraftBot.sendChatMessage(content);
-                    
+
                     // Reply to the user
                     await interaction.reply({ 
                         content: `Message sent to Minecraft: "${content}"`, 
                         ephemeral: true 
                     });
-                    
+
                     logger.info(`Discord user sent message to Minecraft: "${content}"`);
                 } else {
                     await interaction.reply({ 
@@ -496,6 +502,34 @@ class DiscordClient {
                     ephemeral: true 
                 });
             }
+        } else if (interaction.commandName === 'walk') {
+            const blocks = interaction.options.getInteger('blocks');
+
+            try {
+                if (this.minecraftBot && this.minecraftBot.isConnected) {
+                    // Make the bot walk forward
+                    await this.minecraftBot.walkForward(blocks);
+
+                    // Reply to the user
+                    await interaction.reply({ 
+                        content: `Bot is walking ${blocks} blocks forward`, 
+                        ephemeral: true 
+                    });
+
+                    logger.info(`Discord user commanded bot to walk ${blocks} blocks forward`);
+                } else {
+                    await interaction.reply({ 
+                        content: 'Bot is not connected to Minecraft server', 
+                        ephemeral: true 
+                    });
+                }
+            } catch (error) {
+                logger.error('Failed to make bot walk:', error);
+                await interaction.reply({ 
+                    content: 'Failed to make bot walk forward', 
+                    ephemeral: true 
+                });
+            }
         }
     }
 
@@ -504,10 +538,72 @@ class DiscordClient {
         this.minecraftBot = minecraftBot;
     }
 
+    // Method to set custom Discord status
+    async setStatus(state, additionalInfo = '') {
+        if (!this.client || !this.client.user) return;
+
+        try {
+            let status, activity;
+
+            switch (state) {
+                case 'startup':
+                    activity = {
+                        name: 'Starting up...',
+                        type: 0 // Playing
+                    };
+                    status = 'idle';
+                    break;
+                case 'authentication':
+                    activity = {
+                        name: 'Authentication Mode',
+                        type: 0 // Playing
+                    };
+                    status = 'dnd';
+                    break;
+                case 'disconnected':
+                    activity = {
+                        name: 'Not connected',
+                        type: 0 // Playing
+                    };
+                    status = 'dnd';
+                    break;
+                case 'connected':
+                    activity = {
+                        name: `Connected and monitoring${additionalInfo}`,
+                        type: 0 // Playing
+                    };
+                    status = 'online';
+                    break;
+                case 'error':
+                    activity = {
+                        name: 'Connection Error',
+                        type: 0 // Playing
+                    };
+                    status = 'dnd';
+                    break;
+                default:
+                    activity = {
+                        name: 'Minecraft Bridge Bot',
+                        type: 0 // Playing
+                    };
+                    status = 'online';
+            }
+
+            await this.client.user.setPresence({
+                activities: [activity],
+                status: status
+            });
+
+            logger.info(`Discord status updated: ${activity.name} (${status})`);
+        } catch (error) {
+            logger.error('Failed to set Discord status:', error);
+        }
+    }
+
     async disconnect() {
         if (this.client && this.isConnected) {
             logger.info('Disconnecting from Discord...');
-            
+
             if (this.channels.status) {
                 try {
                     await this.sendStatusEmbed('🔴 Shutting Down', 'Minecraft bot is shutting down...', 0xFF0000);
@@ -515,7 +611,7 @@ class DiscordClient {
                     logger.error('Failed to send shutdown message:', error);
                 }
             }
-            
+
             this.client.destroy();
             this.isConnected = false;
         }
