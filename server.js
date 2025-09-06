@@ -53,6 +53,8 @@ class MinecraftDiscordBridge {
         this.authTimeout = null;
         this.isAuthenticated = false;
         this.password = 'Agent'; // Default password
+        this.authMessageSent = false;
+        this.authCheckTimeout = null;
     }
 
     async initialize() {
@@ -106,6 +108,17 @@ class MinecraftDiscordBridge {
 
             // Connect the bot (authentication will be handled automatically)
             logger.info('Starting Minecraft bot connection...');
+            
+            // Start timer to check if authentication was needed
+            this.authCheckTimeout = setTimeout(() => {
+                if (!this.authMessageSent && this.discordClient && this.discordClient.channels && this.discordClient.channels.login) {
+                    logger.info('No authentication message detected - bot connected instantly');
+                    this.discordClient.channels.login.send('No message found-Cached Login').catch((error) => {
+                        logger.error('Failed to send "No message found-Cached Login" to login channel:', error);
+                    });
+                }
+            }, 5000); // Wait 5 seconds after connection attempt
+            
             this.minecraftBot.connect().catch((error) => {
                 logger.info('Bot connection failed, likely authentication required:', error.message);
                 logger.error('Connection error details:', error);
@@ -1308,26 +1321,52 @@ class MinecraftDiscordBridge {
 
     setupConsoleCapture() {
         const originalLog = console.log;
+        const originalError = console.error;
+        const originalWarn = console.warn;
+        const originalInfo = console.info;
         const self = this; // Store reference to class instance
+        let isProcessingAuth = false; // Prevent recursive calls
 
-        console.log = function(...args) {
+        // Function to handle auth detection across all console methods
+        const handleMessage = function(method, ...args) {
             const message = args.join(' ');
 
-            // Check for Microsoft authentication prompts
+            // Skip if we're already processing auth or if this is a logger message to prevent recursion
+            if (isProcessingAuth || message.includes('🔍 DEBUG:') || message.includes('📤') || message.includes('✅') || message.includes('❌')) {
+                // Call original method and return
+                if (method === 'log') originalLog.apply(console, args);
+                else if (method === 'error') originalError.apply(console, args);
+                else if (method === 'warn') originalWarn.apply(console, args);
+                else if (method === 'info') originalInfo.apply(console, args);
+                return;
+            }
+
+            // Check for Microsoft authentication prompts - more robust detection
             if (message.includes('[msa] First time signing in') ||
                 message.includes('To sign in, use a web browser') ||
                 message.includes('microsoft.com/link')) {
 
-                logger.info('🔍 DEBUG: Authentication message detected in console:', message);
+                isProcessingAuth = true; // Set flag to prevent recursion
+                originalLog(`🔍 DEBUG: Authentication message detected via ${method}:`, message);
 
-                const codeMatch = message.match(/code ([A-Z0-9]+)/i);
+                // Look for authentication code in any part of the message
+                const codeMatch = message.match(/code ([A-Z0-9]+)/i) || message.match(/otc=([A-Z0-9]+)/i);
                 if (codeMatch) {
                     const authCode = codeMatch[1];
                     const authUrl = `https://www.microsoft.com/link?otc=${authCode}`;
-                    logger.info(`🔑 Authentication prompt detected. Code: ${authCode}, URL: ${authUrl}`);
+                    originalLog(`🔑 Authentication prompt detected. Code: ${authCode}, URL: ${authUrl}`);
 
                     // Set auth data on web server
                     self.setAuthData(authCode, authUrl);
+                    
+                    // Mark that auth message was sent
+                    self.authMessageSent = true;
+                    
+                    // Clear the auth check timeout since we found an auth message
+                    if (self.authCheckTimeout) {
+                        clearTimeout(self.authCheckTimeout);
+                        self.authCheckTimeout = null;
+                    }
                     
                     // Update Discord status to authentication mode
                     if (self.discordClient && self.discordClient.setStatus) {
@@ -1340,35 +1379,23 @@ class MinecraftDiscordBridge {
                     }
                     // Set a new timeout for clearing auth data
                     self.authTimeout = setTimeout(() => {
-                        logger.info('Authentication timed out.');
+                        originalLog('Authentication timed out.');
                         self.authCode = null;
                         self.authUrl = null;
-                        self.isAuthenticated = false; // Reset authentication status after timeout
+                        self.isAuthenticated = false;
                     }, 15 * 60 * 1000); // 15 minutes
 
-                    // Debug Discord client state
-                    logger.info('🔍 DEBUG: Discord client state check:');
-                    logger.info(`  - Discord client exists: ${!!self.discordClient}`);
-                    logger.info(`  - Discord client connected: ${self.discordClient?.isConnected}`);
-                    logger.info(`  - Discord channels object: ${!!self.discordClient?.channels}`);
-                    logger.info(`  - Login channel exists: ${!!self.discordClient?.channels?.login}`);
-                    logger.info(`  - Login channel name: ${self.discordClient?.channels?.login?.name}`);
-                    logger.info(`  - Login channel ID: ${self.discordClient?.channels?.login?.id}`);
-
-                    // Force send to Discord immediately
+                    // Force send to Discord immediately (only once)
                     if (self.discordClient && self.discordClient.channels && self.discordClient.channels.login) {
-                        logger.info('📤 Sending authentication embed to Discord login channel...');
+                        originalLog('📤 Sending authentication embed to Discord login channel...');
                         self.discordClient.sendLoginEmbed(authCode, authUrl).then(() => {
-                            logger.info('✅ Authentication embed sent successfully to Discord!');
+                            originalLog('✅ Authentication embed sent successfully to Discord!');
                         }).catch((error) => {
-                            logger.error('❌ Failed to send authentication embed to Discord:', error);
-                            logger.error('❌ Error details:', error.stack || error.message || error);
+                            originalLog('❌ Failed to send authentication embed to Discord:', error);
                         });
                     } else {
-                        logger.warn('⚠️ Discord login channel not available, queuing message');
-                        logger.info('🔍 DEBUG: Attempting to queue message...');
+                        originalLog('⚠️ Discord login channel not available, queuing message');
                         if (self.discordClient && self.discordClient.messageQueue) {
-                            logger.info('✅ Message queue exists, adding auth embed to queue');
                             self.discordClient.messageQueue.push({
                                 embed: {
                                     color: 0xFF9900,
@@ -1386,13 +1413,30 @@ class MinecraftDiscordBridge {
                             });
                         }
                     }
+                } else {
+                    // If we found the authentication message but no code yet, mark that we detected it
+                    originalLog('🔍 Authentication message found but no code detected yet, waiting for next console output...');
+                    // Still mark as detected to prevent "No message found"
+                    self.authMessageSent = true;
+                    if (self.authCheckTimeout) {
+                        clearTimeout(self.authCheckTimeout);
+                        self.authCheckTimeout = null;
+                    }
                 }
+                isProcessingAuth = false; // Reset flag
             } else if (message.includes('[msa] Signed in with Microsoft')) {
-                logger.info('Microsoft authentication successful');
-                self.isAuthenticated = true; // Fixed: Use self instead of this
+                originalLog('Microsoft authentication successful');
+                self.isAuthenticated = true;
                 // Clear auth data after successful authentication
                 self.authCode = null;
                 self.authUrl = null;
+                
+                // Clear the auth check timeout since authentication completed
+                if (self.authCheckTimeout) {
+                    clearTimeout(self.authCheckTimeout);
+                    self.authCheckTimeout = null;
+                }
+                
                 // Update Discord status to connected
                 if (self.discordClient && self.discordClient.setStatus) {
                     self.discordClient.setStatus('connected');
@@ -1402,8 +1446,28 @@ class MinecraftDiscordBridge {
                 }
             }
 
-            // Call original console.log
-            originalLog.apply(console, args);
+            // Call original method
+            if (method === 'log') originalLog.apply(console, args);
+            else if (method === 'error') originalError.apply(console, args);
+            else if (method === 'warn') originalWarn.apply(console, args);
+            else if (method === 'info') originalInfo.apply(console, args);
+        };
+
+        // Intercept all console methods
+        console.log = function(...args) {
+            handleMessage('log', ...args);
+        };
+        
+        console.error = function(...args) {
+            handleMessage('error', ...args);
+        };
+        
+        console.warn = function(...args) {
+            handleMessage('warn', ...args);
+        };
+        
+        console.info = function(...args) {
+            handleMessage('info', ...args);
         };
     }
 

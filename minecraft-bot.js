@@ -495,6 +495,111 @@ class MinecraftBot {
         }
     }
 
+    async performJump(times = 1) {
+        if (!this.bot || !this.isConnected) {
+            throw new Error('Bot is not connected to Minecraft server');
+        }
+
+        try {
+            logger.info(`Performing ${times} jump(s)`);
+            
+            for (let i = 0; i < times; i++) {
+                this.bot.setControlState('jump', true);
+                await new Promise(resolve => setTimeout(resolve, 200)); // Jump duration
+                this.bot.setControlState('jump', false);
+                
+                if (i < times - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 300)); // Pause between jumps
+                }
+            }
+            
+            logger.info(`Completed ${times} jump(s)`);
+        } catch (error) {
+            logger.error('Failed to make bot jump:', error);
+            throw error;
+        }
+    }
+
+    async lookDirection(direction) {
+        if (!this.bot || !this.isConnected) {
+            throw new Error('Bot is not connected to Minecraft server');
+        }
+
+        try {
+            let yaw, pitch = 0;
+            
+            switch (direction.toLowerCase()) {
+                case 'north':
+                    yaw = -Math.PI / 2; // -90 degrees
+                    break;
+                case 'south':
+                    yaw = Math.PI / 2; // 90 degrees
+                    break;
+                case 'east':
+                    yaw = 0; // 0 degrees
+                    break;
+                case 'west':
+                    yaw = Math.PI; // 180 degrees
+                    break;
+                case 'up':
+                    yaw = this.bot.entity.yaw;
+                    pitch = -Math.PI / 2; // Look up
+                    break;
+                case 'down':
+                    yaw = this.bot.entity.yaw;
+                    pitch = Math.PI / 2; // Look down
+                    break;
+                case 'random':
+                    yaw = Math.random() * 2 * Math.PI;
+                    pitch = (Math.random() - 0.5) * Math.PI;
+                    break;
+                default:
+                    throw new Error(`Invalid direction: ${direction}`);
+            }
+            
+            this.bot.look(yaw, pitch, true);
+            logger.info(`Bot looking ${direction}`);
+            
+        } catch (error) {
+            logger.error('Failed to make bot look:', error);
+            throw error;
+        }
+    }
+
+
+    async stopAllActions() {
+        if (!this.bot || !this.isConnected) {
+            throw new Error('Bot is not connected to Minecraft server');
+        }
+
+        try {
+            // Clear all control states
+            this.bot.clearControlStates();
+            
+            // Stop any anti-AFK actions
+            if (this.afkInterval) {
+                clearInterval(this.afkInterval);
+                this.afkInterval = null;
+                logger.info('Stopped anti-AFK system');
+            }
+            
+            logger.info('All bot actions stopped');
+            
+            // Restart anti-AFK if it was enabled
+            if (config.minecraft.enableAntiAfk) {
+                setTimeout(() => {
+                    this.startAntiAfk();
+                    logger.info('Anti-AFK system restarted');
+                }, 2000); // Wait 2 seconds before restarting
+            }
+            
+        } catch (error) {
+            logger.error('Failed to stop bot actions:', error);
+            throw error;
+        }
+    }
+
+
     async disconnect() {
         if (this.bot && this.isConnected) {
             logger.info('Disconnecting from Minecraft server...');

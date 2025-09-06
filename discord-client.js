@@ -92,7 +92,55 @@ class DiscordClient {
                             .setRequired(true)
                             .setMinValue(1)
                             .setMaxValue(100)
-                    )
+                    ),
+                new SlashCommandBuilder()
+                    .setName('players')
+                    .setDescription('Show the list of online players'),
+                new SlashCommandBuilder()
+                    .setName('status')
+                    .setDescription('Show bot status and server information'),
+                new SlashCommandBuilder()
+                    .setName('ping')
+                    .setDescription('Check bot connectivity and response time'),
+                new SlashCommandBuilder()
+                    .setName('help')
+                    .setDescription('Show available commands and their usage'),
+                new SlashCommandBuilder()
+                    .setName('location')
+                    .setDescription('Show bot\'s current position in the world'),
+                new SlashCommandBuilder()
+                    .setName('health')
+                    .setDescription('Show bot\'s current health and hunger status'),
+                new SlashCommandBuilder()
+                    .setName('jump')
+                    .setDescription('Make the bot jump')
+                    .addIntegerOption(option =>
+                        option.setName('times')
+                            .setDescription('Number of times to jump (1-5)')
+                            .setRequired(false)
+                            .setMinValue(1)
+                            .setMaxValue(5)
+                    ),
+                new SlashCommandBuilder()
+                    .setName('look')
+                    .setDescription('Make the bot look in a specific direction')
+                    .addStringOption(option =>
+                        option.setName('direction')
+                            .setDescription('Direction to look')
+                            .setRequired(true)
+                            .addChoices(
+                                { name: 'North', value: 'north' },
+                                { name: 'South', value: 'south' },
+                                { name: 'East', value: 'east' },
+                                { name: 'West', value: 'west' },
+                                { name: 'Up', value: 'up' },
+                                { name: 'Down', value: 'down' },
+                                { name: 'Random', value: 'random' }
+                            )
+                    ),
+                new SlashCommandBuilder()
+                    .setName('stop')
+                    .setDescription('Stop all bot movement and actions')
             ];
 
             const rest = new REST({ version: '10' }).setToken(config.discord.token);
@@ -282,12 +330,56 @@ class DiscordClient {
     }
 
     async sendStatusEmbed(title, description, color = 0x00FF00) {
+        // Create rich status embed using the same format as /status command
+        const bot = this.minecraftBot;
+        const isOnline = bot?.isConnected;
+        const playerCount = bot?.players?.size || 0;
+        
+        // Determine status based on title/description for backwards compatibility
+        let statusText = description;
+        let embedColor = color;
+        
+        // Map common status messages to cleaner descriptions
+        if (title.includes('Connected') || description.includes('connected') || description.includes('online')) {
+            statusText = `Connected to **${config.minecraft.host}** as **${config.minecraft.username}**`;
+            embedColor = 0x2ECC71; // Green
+        } else if (title.includes('Disconnected') || description.includes('disconnected') || description.includes('offline')) {
+            statusText = `Disconnected from **${config.minecraft.host}**`;
+            embedColor = 0xE74C3C; // Red
+        } else if (title.includes('Starting') || description.includes('initializing') || description.includes('starting')) {
+            statusText = `Connecting to **${config.minecraft.host}** as **${config.minecraft.username}**`;
+            embedColor = 0xF39C12; // Orange
+        } else if (title.includes('Authentication') || description.includes('authenticate')) {
+            statusText = `Waiting for authentication to **${config.minecraft.host}**`;
+            embedColor = 0x9B59B6; // Purple
+        } else if (title.includes('Error') || title.includes('Failed') || description.includes('error') || description.includes('failed')) {
+            statusText = `Connection error with **${config.minecraft.host}**`;
+            embedColor = 0xE74C3C; // Red
+        }
+
         const embed = new EmbedBuilder()
-            .setColor(color)
-            .setTitle(title)
-            .setDescription(description)
-            .setTimestamp()
-            .setFooter({ text: 'Bot Status' });
+            .setColor(embedColor)
+            .setTitle('Bot Status')
+            .setDescription(statusText)
+            .addFields(
+                { 
+                    name: 'Server Info', 
+                    value: `**Host:** ${config.minecraft.host}\n**Port:** ${config.minecraft.port}\n**Version:** ${config.minecraft.version}`, 
+                    inline: true 
+                },
+                { 
+                    name: 'Connection', 
+                    value: `**Status:** ${isOnline ? 'Online' : 'Offline'}\n**Players:** ${playerCount}\n**Attempts:** ${bot?.reconnectAttempts || 0}/${config.minecraft.maxReconnectAttempts}`, 
+                    inline: true 
+                },
+                { 
+                    name: 'Features', 
+                    value: `**Anti-AFK:** ${config.minecraft.enableAntiAfk ? 'Enabled' : 'Disabled'}\n**Auth:** Microsoft\n**Auto-Reconnect:** Enabled`, 
+                    inline: true 
+                }
+            )
+            .setFooter({ text: `Bot Username: ${config.minecraft.username}` })
+            .setTimestamp();
 
         if (!this.isConnected) {
             this.messageQueue.push({embed, channelType: 'status', isStatusUpdate: true});
@@ -360,31 +452,22 @@ class DiscordClient {
     }
 
     async sendLoginEmbed(authCode, authUrl) {
-        logger.info('🔍 DEBUG: sendLoginEmbed called with:', { authCode, authUrl });
-
         const embed = new EmbedBuilder()
             .setColor(0xFF9900)
             .setTitle('🔑 Microsoft Authentication Required')
             .setDescription('Please authenticate your Minecraft account to continue')
             .addFields(
-                { name: '🌐 Authentication URL', value: `[Click here to authenticate](${authUrl})`, inline: false },
+                { name: '🌐 Authentication URL', value: authUrl, inline: false },
                 { name: '🔢 Authentication Code', value: `\`\`\`${authCode}\`\`\``, inline: false },
-                { name: '📝 Instructions', value: '1. Click the link above\n2. Enter the code shown\n3. Sign in with your Minecraft account', inline: false }
+                { name: '📝 Instructions', value: '1. Click the link above\n2. Enter the code shown\n3. Sign in with your Microsoft account', inline: false }
             )
             .setTimestamp()
             .setFooter({ text: 'One-time authentication' });
 
-        logger.info('🔍 DEBUG: Embed created successfully');
-
         if (!this.isConnected) {
-            logger.warn('🔍 DEBUG: Discord not connected, queuing message');
             this.messageQueue.push({embed, channelType: 'login'});
-            logger.info('🔍 DEBUG: Message added to queue, queue length:', this.messageQueue.length);
             return;
         }
-
-        logger.info('🔍 DEBUG: Discord is connected, attempting to send to channel');
-        logger.info('🔍 DEBUG: Login channel available:', !!this.channels.login);
 
         if (this.channels.login) {
             try {
@@ -474,63 +557,225 @@ class DiscordClient {
     }
 
     async handleSlashCommand(interaction) {
-        if (interaction.commandName === 'message') {
-            const content = interaction.options.getString('content');
+        const { commandName } = interaction;
+        const startTime = Date.now();
 
-            try {
-                if (this.minecraftBot && this.minecraftBot.isConnected) {
-                    // Send message to Minecraft
+        // Check bot connection for commands that require it
+        const requiresConnection = ['message', 'walk', 'location', 'health', 'jump', 'look', 'stop'];
+        if (requiresConnection.includes(commandName) && (!this.minecraftBot || !this.minecraftBot.isConnected)) {
+            return await interaction.reply({ 
+                content: '❌ Bot is not connected to Minecraft server', 
+                ephemeral: true 
+            });
+        }
+
+        try {
+            switch (commandName) {
+                case 'message': {
+                    const content = interaction.options.getString('content');
                     await this.minecraftBot.sendChatMessage(content);
-
-                    // Reply to the user
                     await interaction.reply({ 
-                        content: `Message sent to Minecraft: "${content}"`, 
+                        content: `📨 Message sent: "${content}"`, 
                         ephemeral: true 
                     });
-
                     logger.info(`Discord user sent message to Minecraft: "${content}"`);
-                } else {
+                    break;
+                }
+
+                case 'walk': {
+                    const blocks = interaction.options.getInteger('blocks');
+                    await this.minecraftBot.walkForward(blocks);
                     await interaction.reply({ 
-                        content: 'Bot is not connected to Minecraft server', 
+                        content: `🚶 Bot is walking ${blocks} blocks forward`, 
                         ephemeral: true 
                     });
+                    logger.info(`Discord user commanded bot to walk ${blocks} blocks forward`);
+                    break;
                 }
-            } catch (error) {
-                logger.error('Failed to send message to Minecraft:', error);
-                await interaction.reply({ 
-                    content: 'Failed to send message to Minecraft', 
+
+                case 'players': {
+                    const players = this.minecraftBot ? Array.from(this.minecraftBot.players) : [];
+                    const embed = new EmbedBuilder()
+                        .setColor(0x00FF00)
+                        .setTitle('🎮 Online Players')
+                        .setDescription(players.length > 0 ? players.map(player => `👤 ${player}`).join('\n') : '🚫 No players online')
+                        .addFields({ name: '📊 Total Players', value: `${players.length}`, inline: true })
+                        .setTimestamp();
+                    
+                    await interaction.reply({ embeds: [embed], ephemeral: true });
+                    break;
+                }
+
+                case 'status': {
+                    const bot = this.minecraftBot;
+                    const isOnline = bot?.isConnected;
+                    const playerCount = bot?.players?.size || 0;
+                    
+                    const embed = new EmbedBuilder()
+                        .setColor(isOnline ? 0x2ECC71 : 0xE74C3C)
+                        .setTitle('Bot Status')
+                        .setDescription(isOnline ? 
+                            `Connected to **${config.minecraft.host}** as **${config.minecraft.username}**` : 
+                            `Disconnected from **${config.minecraft.host}**`
+                        )
+                        .addFields(
+                            { 
+                                name: 'Server Info', 
+                                value: `**Host:** ${config.minecraft.host}\n**Port:** ${config.minecraft.port}\n**Version:** ${config.minecraft.version}`, 
+                                inline: true 
+                            },
+                            { 
+                                name: 'Connection', 
+                                value: `**Status:** ${isOnline ? 'Online' : 'Offline'}\n**Players:** ${playerCount}\n**Attempts:** ${bot?.reconnectAttempts || 0}/${config.minecraft.maxReconnectAttempts}`, 
+                                inline: true 
+                            },
+                            { 
+                                name: 'Features', 
+                                value: `**Anti-AFK:** ${config.minecraft.enableAntiAfk ? 'Enabled' : 'Disabled'}\n**Auth:** Microsoft\n**Auto-Reconnect:** Enabled`, 
+                                inline: true 
+                            }
+                        )
+                        .setFooter({ text: `Bot Username: ${config.minecraft.username}` })
+                        .setTimestamp();
+                    
+                    await interaction.reply({ embeds: [embed], ephemeral: true });
+                    break;
+                }
+
+                case 'ping': {
+                    const responseTime = Date.now() - startTime;
+                    const embed = new EmbedBuilder()
+                        .setColor(0x00FFFF)
+                        .setTitle('🏓 Pong!')
+                        .addFields(
+                            { name: '⚡ Discord Response', value: `${responseTime}ms`, inline: true },
+                            { name: '🌐 WebSocket Ping', value: `${this.client.ws.ping}ms`, inline: true },
+                            { name: '🔌 Bot Status', value: this.minecraftBot?.isConnected ? '🟢 Online' : '🔴 Offline', inline: true }
+                        )
+                        .setTimestamp();
+                    
+                    await interaction.reply({ embeds: [embed], ephemeral: true });
+                    break;
+                }
+
+                case 'help': {
+                    const embed = new EmbedBuilder()
+                        .setColor(0x0099FF)
+                        .setTitle('🎮 Bot Commands')
+                        .setDescription('Here are all the available commands:')
+                        .addFields(
+                            { name: '💬 Chat Commands', value: '`/message` - Send a message to the server', inline: false },
+                            { name: '🚶 Movement Commands', value: '`/walk` - Walk forward\n`/jump` - Jump in place\n`/look` - Look in a direction\n`/stop` - Stop all movement', inline: false },
+                            { name: '📊 Information Commands', value: '`/players` - Show online players\n`/status` - Show bot status\n`/ping` - Check connectivity\n`/location` - Show bot position\n`/health` - Show bot health', inline: false },
+                            { name: '❓ Utility Commands', value: '`/help` - Show this help message', inline: false }
+                        )
+                        .setFooter({ text: 'Use these commands to control the Minecraft bot!' })
+                        .setTimestamp();
+                    
+                    await interaction.reply({ embeds: [embed], ephemeral: true });
+                    break;
+                }
+
+                case 'location': {
+                    if (!this.minecraftBot.bot?.entity?.position) {
+                        return await interaction.reply({ content: '❌ Unable to get bot location', ephemeral: true });
+                    }
+                    
+                    const pos = this.minecraftBot.bot.entity.position;
+                    const embed = new EmbedBuilder()
+                        .setColor(0xFF9900)
+                        .setTitle('📍 Bot Location')
+                        .addFields(
+                            { name: '🌍 Dimension', value: this.minecraftBot.bot.game?.dimension || 'Unknown', inline: true },
+                            { name: '📐 Coordinates', value: `X: ${Math.round(pos.x)}\nY: ${Math.round(pos.y)}\nZ: ${Math.round(pos.z)}`, inline: true },
+                            { name: '🧭 Direction', value: this.getDirectionFromYaw(this.minecraftBot.bot.entity.yaw), inline: true }
+                        )
+                        .setTimestamp();
+                    
+                    await interaction.reply({ embeds: [embed], ephemeral: true });
+                    break;
+                }
+
+                case 'health': {
+                    const bot = this.minecraftBot.bot;
+                    if (!bot) {
+                        return await interaction.reply({ content: '❌ Bot data unavailable', ephemeral: true });
+                    }
+                    
+                    const healthColor = bot.health > 15 ? 0x00FF00 : bot.health > 10 ? 0xFFAA00 : 0xFF0000;
+                    const embed = new EmbedBuilder()
+                        .setColor(healthColor)
+                        .setTitle('💖 Bot Health Status')
+                        .addFields(
+                            { name: '❤️ Health', value: `${bot.health || 0}/20`, inline: true },
+                            { name: '🍗 Food', value: `${bot.food || 0}/20`, inline: true },
+                            { name: '💨 Saturation', value: `${Math.round(bot.foodSaturation || 0)}`, inline: true },
+                            { name: '🎚️ Experience', value: `Level ${bot.experience?.level || 0} (${bot.experience?.points || 0} points)`, inline: false }
+                        )
+                        .setTimestamp();
+                    
+                    await interaction.reply({ embeds: [embed], ephemeral: true });
+                    break;
+                }
+
+                case 'jump': {
+                    const times = interaction.options.getInteger('times') || 1;
+                    await this.minecraftBot.performJump(times);
+                    await interaction.reply({ 
+                        content: `🦘 Bot is jumping ${times} time${times > 1 ? 's' : ''}!`, 
+                        ephemeral: true 
+                    });
+                    break;
+                }
+
+                case 'look': {
+                    const direction = interaction.options.getString('direction');
+                    await this.minecraftBot.lookDirection(direction);
+                    await interaction.reply({ 
+                        content: `👀 Bot is looking ${direction}`, 
+                        ephemeral: true 
+                    });
+                    break;
+                }
+
+                case 'stop': {
+                    await this.minecraftBot.stopAllActions();
+                    await interaction.reply({ 
+                        content: '🛑 All bot actions stopped', 
+                        ephemeral: true 
+                    });
+                    break;
+                }
+
+                default:
+                    await interaction.reply({ 
+                        content: '❌ Unknown command', 
+                        ephemeral: true 
+                    });
+            }
+        } catch (error) {
+            logger.error(`Failed to execute command ${commandName}:`, error);
+            const errorMessage = error.message || 'An unknown error occurred';
+            
+            if (interaction.replied || interaction.deferred) {
+                await interaction.followUp({ 
+                    content: `❌ Command failed: ${errorMessage}`, 
                     ephemeral: true 
                 });
-            }
-        } else if (interaction.commandName === 'walk') {
-            const blocks = interaction.options.getInteger('blocks');
-
-            try {
-                if (this.minecraftBot && this.minecraftBot.isConnected) {
-                    // Make the bot walk forward
-                    await this.minecraftBot.walkForward(blocks);
-
-                    // Reply to the user
-                    await interaction.reply({ 
-                        content: `Bot is walking ${blocks} blocks forward`, 
-                        ephemeral: true 
-                    });
-
-                    logger.info(`Discord user commanded bot to walk ${blocks} blocks forward`);
-                } else {
-                    await interaction.reply({ 
-                        content: 'Bot is not connected to Minecraft server', 
-                        ephemeral: true 
-                    });
-                }
-            } catch (error) {
-                logger.error('Failed to make bot walk:', error);
+            } else {
                 await interaction.reply({ 
-                    content: 'Failed to make bot walk forward', 
+                    content: `❌ Command failed: ${errorMessage}`, 
                     ephemeral: true 
                 });
             }
         }
+    }
+
+    // Helper method to convert yaw to compass direction
+    getDirectionFromYaw(yaw) {
+        const angle = ((yaw * 180) / Math.PI + 180) % 360;
+        const directions = ['South', 'Southwest', 'West', 'Northwest', 'North', 'Northeast', 'East', 'Southeast'];
+        return directions[Math.round(angle / 45) % 8];
     }
 
     // Method to set minecraft bot reference
