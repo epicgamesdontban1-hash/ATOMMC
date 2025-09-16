@@ -45,8 +45,8 @@ function validateConfig() {
         throw new Error('Either DISCORD_BOT_TOKEN with DISCORD_CHANNEL_ID or DISCORD_WEBHOOK_URL must be provided');
     }
 
-    if (config.discord.token && (!config.discord.channels.logs || !config.discord.channels.login || !config.discord.channels.status || !config.discord.channels.playerList)) {
-        throw new Error('All Discord channel IDs are required: DISCORD_LOGS_CHANNEL_ID, DISCORD_LOGIN_CHANNEL_ID, DISCORD_STATUS_CHANNEL_ID, DISCORD_PLAYER_LIST_CHANNEL_ID');
+    if (config.discord.token && (!config.discord.channels.logs || !config.discord.channels.login || !config.discord.channels.status)) {
+        throw new Error('Required Discord channel IDs missing: DISCORD_LOGS_CHANNEL_ID, DISCORD_LOGIN_CHANNEL_ID, DISCORD_STATUS_CHANNEL_ID are required when using bot token');
     }
 
     for (const path of required) {

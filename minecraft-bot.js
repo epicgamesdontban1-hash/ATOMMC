@@ -14,19 +14,37 @@ class MinecraftBot {
         this.isReconnecting = false;
         this.afkInterval = null;
         this.players = new Set();
+        this.detectedUsername = null; // Auto-detected username after login
+        this.connectionState = 'idle'; // idle, connecting, authenticating, connected, disconnecting, reconnecting, error
+        this.shouldReconnect = true; // Manual control for reconnection
+        this.connectTimeout = null;
+        this.reconnectTimeout = null;
+        this.closestPlayer = null; // Track the player closest to the bot
+        this.closestPlayerDistance = Infinity; // Track the distance to the closest player
+        this.playerTrackingInterval = null; // Interval for tracking player positions
     }
 
     async connect() {
         try {
+            // Prevent overlapping connection attempts
+            if (this.connectionState === 'connecting' || this.connectionState === 'connected') {
+                logger.warn('Connection already in progress or established, skipping');
+                return;
+            }
+
+            // Set connection state
+            this.connectionState = 'connecting';
+
             logger.info('Connecting to Minecraft server...');
 
-            // Setup Microsoft authentication
-            const authflow = new Authflow(config.minecraft.username, './cache');
+            // Setup Microsoft authentication with username fallback
+            const username = config.minecraft.username || 'MinecraftBridgeBot';
+            const authflow = new Authflow(username, './cache');
 
             const botOptions = {
                 host: config.minecraft.host,
                 port: config.minecraft.port,
-                username: config.minecraft.username,
+                username: username,
                 version: config.minecraft.version,
                 auth: 'microsoft',
                 authflow: authflow
@@ -53,37 +71,52 @@ class MinecraftBot {
             this.setupEventHandlers();
 
             return new Promise((resolve, reject) => {
-                const timeout = setTimeout(() => {
+                this.connectTimeout = setTimeout(() => {
+                    this.connectionState = 'error';
                     reject(new Error('Connection timeout - server may be offline or unreachable'));
                 }, 60000); // Increased timeout for authentication
 
                 this.bot.once('spawn', () => {
-                    clearTimeout(timeout);
+                    clearTimeout(this.connectTimeout);
                     this.isConnected = true;
+                    this.connectionState = 'connected';
                     this.reconnectAttempts = 0;
-                    logger.info(`Successfully connected to ${config.minecraft.host}:${config.minecraft.port}`);
+
+                    // Auto-detect username after successful login
+                    this.detectedUsername = this.bot.username;
+                    logger.info(`Successfully connected to ${config.minecraft.host}:${config.minecraft.port} as ${this.detectedUsername}`);
+                    
+                    // Update Discord status immediately with detected username
+                    if (this.discordClient) {
+                        this.discordClient.sendStatusEmbed('Connected', `Bot is now online on ${config.minecraft.host} as ${this.detectedUsername}`, 0x00FF00);
+                    }
+                    
                     resolve();
                 });
 
                 this.bot.once('error', (error) => {
-                    clearTimeout(timeout);
+                    clearTimeout(this.connectTimeout);
+                    this.connectionState = 'error';
                     logger.error('Bot connection error:', error.message || error);
                     reject(error);
                 });
 
                 this.bot.once('end', (reason) => {
-                    clearTimeout(timeout);
+                    clearTimeout(this.connectTimeout);
                     if (!this.isConnected) {
+                        this.connectionState = 'error';
                         logger.error('Connection ended before spawn:', reason);
                         reject(new Error(`Connection ended: ${reason}`));
                     }
                 });
             });
         } catch (error) {
+            this.connectionState = 'error';
             const errorStr = error.toString();
 
             // Check if this is an authentication prompt
             if (errorStr.includes('To sign in, use a web browser') || errorStr.includes('microsoft.com/link')) {
+                this.connectionState = 'authenticating';
                 const codeMatch = errorStr.match(/code ([A-Z0-9]+)/i);
                 if (codeMatch) {
                     const authCode = codeMatch[1];
@@ -121,17 +154,14 @@ class MinecraftBot {
         // Connection events
         this.bot.on('spawn', () => {
             logger.info(`Bot spawned in world: ${this.bot.game.dimension}`);
-            this.discordClient.sendStatusEmbed('Connected', `Bot is now online on ${config.minecraft.host}`, 0x00FF00);
-
+            // Don't send status embed here since it's already sent in the connect() method
+            
             // Update Discord bot status to connected
             if (this.discordClient && this.discordClient.setStatus) {
                 this.discordClient.setStatus('connected', ` - ${this.bot.game.dimension}`);
             }
 
-            // Add bot to player list when it joins
-            this.players.add(this.bot.username);
-
-            // Initialize player list
+            // Initialize player list (this will handle adding the bot properly)
             this.initializePlayerList();
 
             // Start anti-AFK behavior only if enabled
@@ -141,11 +171,15 @@ class MinecraftBot {
             } else {
                 logger.info('Anti-AFK system disabled by configuration');
             }
+
+            // Start tracking player positions
+            this.startPlayerTracking();
         });
 
         this.bot.on('end', (reason) => {
             this.isConnected = false;
             this.stopAntiAfk(); // Stop anti-AFK when disconnected
+            this.stopPlayerTracking(); // Stop player tracking when disconnected
             logger.warn(`Bot disconnected: ${reason}`);
             this.discordClient.sendStatusEmbed('Disconnected', `Bot lost connection: ${reason}`, 0xFF0000);
 
@@ -208,15 +242,27 @@ class MinecraftBot {
 
         // Player join/leave events
         this.bot.on('playerJoined', (player) => {
-            this.players.add(player.username);
-            logger.info(`Player joined: ${player.username}`);
-            this.updatePlayerList();
+            // Only add players with valid usernames
+            if (player && player.username && typeof player.username === 'string' && player.username.trim() !== '') {
+                const username = player.username.trim();
+                this.players.add(username);
+                logger.info(`Player joined: ${username} (Total: ${this.players.size})`);
+                this.updatePlayerList();
+            } else {
+                logger.warn('Attempted to add player with invalid username:', player);
+            }
         });
 
         this.bot.on('playerLeft', (player) => {
-            this.players.delete(player.username);
-            logger.info(`Player left: ${player.username}`);
-            this.updatePlayerList();
+            // Only remove players with valid usernames
+            if (player && player.username && typeof player.username === 'string' && player.username.trim() !== '') {
+                const username = player.username.trim();
+                const wasRemoved = this.players.delete(username);
+                logger.info(`Player left: ${username} (Removed: ${wasRemoved}, Total: ${this.players.size})`);
+                this.updatePlayerList();
+            } else {
+                logger.warn('Attempted to remove player with invalid username:', player);
+            }
         });
 
         // Handle authentication prompts
@@ -251,34 +297,101 @@ class MinecraftBot {
 
     }
 
+    async disconnect() {
+        logger.info('Manually disconnecting from Minecraft server...');
+        this.connectionState = 'disconnecting';
+        this.shouldReconnect = false; // Prevent auto-reconnect
+
+        // Clear any pending timeouts
+        if (this.connectTimeout) {
+            clearTimeout(this.connectTimeout);
+            this.connectTimeout = null;
+        }
+
+        if (this.reconnectTimeout) {
+            clearTimeout(this.reconnectTimeout);
+            this.reconnectTimeout = null;
+        }
+
+        // Stop anti-AFK
+        this.stopAntiAfk();
+
+        // Disconnect the bot
+        if (this.bot) {
+            try {
+                // Remove all listeners to prevent memory leaks
+                this.bot.removeAllListeners();
+                this.bot.quit('Manual disconnect');
+                this.bot = null;
+            } catch (error) {
+                logger.warn('Error during bot disconnect:', error.message);
+            }
+        }
+
+        this.isConnected = false;
+        this.connectionState = 'idle';
+        logger.info('Successfully disconnected from Minecraft server');
+
+        // Update Discord status
+        this.discordClient.sendStatusEmbed('⏸️ Disconnected', 'Bot manually disconnected', 0xFFAA00);
+    }
+
     async handleReconnect() {
+        // Check if reconnection is disabled
+        if (!this.shouldReconnect) {
+            logger.info('Auto-reconnect is disabled, skipping reconnection');
+            return;
+        }
+
         if (this.isReconnecting) return;
 
+        this.connectionState = 'reconnecting';
         this.isReconnecting = true;
         this.reconnectAttempts++;
 
         if (this.reconnectAttempts > config.minecraft.maxReconnectAttempts) {
             logger.error(`Max reconnection attempts reached (${config.minecraft.maxReconnectAttempts})`);
             this.discordClient.sendStatusEmbed('❌ Failed', `Failed to reconnect after ${config.minecraft.maxReconnectAttempts} attempts`, 0xFF0000);
-            process.exit(1);
+            this.connectionState = 'error';
+            this.isReconnecting = false;
+            return; // Don't exit process, just stop reconnecting
         }
 
         logger.info(`Attempting to reconnect... (${this.reconnectAttempts}/${config.minecraft.maxReconnectAttempts})`);
 
-        setTimeout(async () => {
+        // Calculate exponential backoff with jitter
+        const baseDelay = config.minecraft.reconnectDelay;
+        const exponentialDelay = Math.min(baseDelay * Math.pow(2, this.reconnectAttempts - 1), 300000); // Cap at 5 minutes
+        const jitter = Math.random() * 5000; // Add up to 5 seconds of jitter
+        const totalDelay = exponentialDelay + jitter;
+
+        this.reconnectTimeout = setTimeout(async () => {
             try {
                 await this.connect();
                 this.isReconnecting = false;
+                logger.info(`Reconnection successful after ${this.reconnectAttempts} attempts`);
             } catch (error) {
-                logger.error(`Reconnection attempt ${this.reconnectAttempts} failed:`, error);
-                this.discordClient.sendStatusEmbed('🔄 Reconnecting...', `Attempt ${this.reconnectAttempts}/${config.minecraft.maxReconnectAttempts} failed. Retrying...`, 0xFFAA00);
+                logger.error(`Reconnection attempt ${this.reconnectAttempts} failed:`, error.message);
+                this.discordClient.sendStatusEmbed('🔄 Reconnecting...', `Attempt ${this.reconnectAttempts}/${config.minecraft.maxReconnectAttempts} failed. Retrying in ${Math.round(totalDelay/1000)}s...`, 0xFFAA00);
                 this.isReconnecting = false;
                 this.handleReconnect();
             }
-        }, config.minecraft.reconnectDelay);
+        }, totalDelay);
     }
 
+    // Method to manually enable reconnection (called from Discord reactions)
+    resumeReconnect() {
+        this.shouldReconnect = true;
+        this.reconnectAttempts = 0; // Reset attempts for fresh start
+        logger.info('Auto-reconnect resumed, attempting to connect...');
 
+        // If not currently connected, try to connect
+        if (!this.isConnected && this.connectionState !== 'connecting') {
+            this.connect().catch((error) => {
+                logger.warn('Resume reconnect connection attempt failed:', error.message);
+            });
+        }
+    }
 
     startAntiAfk() {
         if (this.afkInterval) {
@@ -408,16 +521,22 @@ class MinecraftBot {
         // Clear existing player list to sync with current server state
         this.players.clear();
 
-        // Get all currently online players (including bot)
+        // Get all currently online players from the bot's player registry
         if (this.bot.players) {
             Object.values(this.bot.players).forEach(player => {
-                if (player.username) {
-                    this.players.add(player.username);
+                // Only add players with valid usernames and exclude undefined/null values
+                if (player && player.username && typeof player.username === 'string' && player.username.trim() !== '') {
+                    this.players.add(player.username.trim());
                 }
             });
         }
 
-        logger.info(`Synced player list with server - ${this.players.size} players currently online`);
+        // Ensure the bot itself is in the list if it has a valid username
+        if (this.bot.username && typeof this.bot.username === 'string' && this.bot.username.trim() !== '') {
+            this.players.add(this.bot.username.trim());
+        }
+
+        logger.info(`Synced player list with server - ${this.players.size} players currently online: [${Array.from(this.players).join(', ')}]`);
         this.updatePlayerList();
     }
 
@@ -425,8 +544,17 @@ class MinecraftBot {
         if (!this.discordClient || !this.isConnected) return;
 
         try {
-            const playerArray = Array.from(this.players).sort();
-            this.discordClient.sendPlayerListEmbed(playerArray);
+            // Filter out any invalid entries and sort the list
+            const playerArray = Array.from(this.players)
+                .filter(player => player && typeof player === 'string' && player.trim() !== '')
+                .map(player => player.trim())
+                .sort();
+
+            // Remove duplicates (just in case)
+            const uniquePlayers = [...new Set(playerArray)];
+
+            logger.debug(`Updating player list: [${uniquePlayers.join(', ')}] (${uniquePlayers.length} players)`);
+            this.discordClient.sendPlayerListEmbed(uniquePlayers);
         } catch (error) {
             logger.error('Failed to update player list:', error.message || error);
             // Don't crash the bot for player list updates
@@ -437,7 +565,7 @@ class MinecraftBot {
         if (!this.bot || !this.isConnected) {
             throw new Error('Bot is not connected to Minecraft server');
         }
-        
+
         try {
             // Send message to Minecraft chat
             this.bot.chat(message);
@@ -455,20 +583,20 @@ class MinecraftBot {
 
         try {
             logger.info(`Starting to walk ${blocks} blocks forward`);
-            
+
             // Calculate approximate time needed (1 block takes about 1 second at normal walking speed)
             const walkTimePerBlock = 1000; // milliseconds
             const totalWalkTime = blocks * walkTimePerBlock;
-            
+
             // Start walking forward
             this.bot.setControlState('forward', true);
-            
+
             // Stop walking after the calculated time
             setTimeout(() => {
                 if (this.bot && this.isConnected) {
                     this.bot.setControlState('forward', false);
                     logger.info(`Finished walking ${blocks} blocks forward`);
-                    
+
                     // Send status update to Discord
                     if (this.discordClient) {
                         this.discordClient.sendStatusEmbed(
@@ -479,7 +607,7 @@ class MinecraftBot {
                     }
                 }
             }, totalWalkTime);
-            
+
             // Send immediate status update
             if (this.discordClient) {
                 this.discordClient.sendStatusEmbed(
@@ -488,7 +616,7 @@ class MinecraftBot {
                     0xFFAA00
                 );
             }
-            
+
         } catch (error) {
             logger.error('Failed to make bot walk:', error);
             throw error;
@@ -502,17 +630,17 @@ class MinecraftBot {
 
         try {
             logger.info(`Performing ${times} jump(s)`);
-            
+
             for (let i = 0; i < times; i++) {
                 this.bot.setControlState('jump', true);
                 await new Promise(resolve => setTimeout(resolve, 200)); // Jump duration
                 this.bot.setControlState('jump', false);
-                
+
                 if (i < times - 1) {
                     await new Promise(resolve => setTimeout(resolve, 300)); // Pause between jumps
                 }
             }
-            
+
             logger.info(`Completed ${times} jump(s)`);
         } catch (error) {
             logger.error('Failed to make bot jump:', error);
@@ -527,7 +655,7 @@ class MinecraftBot {
 
         try {
             let yaw, pitch = 0;
-            
+
             switch (direction.toLowerCase()) {
                 case 'north':
                     yaw = -Math.PI / 2; // -90 degrees
@@ -556,10 +684,10 @@ class MinecraftBot {
                 default:
                     throw new Error(`Invalid direction: ${direction}`);
             }
-            
+
             this.bot.look(yaw, pitch, true);
             logger.info(`Bot looking ${direction}`);
-            
+
         } catch (error) {
             logger.error('Failed to make bot look:', error);
             throw error;
@@ -575,16 +703,16 @@ class MinecraftBot {
         try {
             // Clear all control states
             this.bot.clearControlStates();
-            
+
             // Stop any anti-AFK actions
             if (this.afkInterval) {
                 clearInterval(this.afkInterval);
                 this.afkInterval = null;
                 logger.info('Stopped anti-AFK system');
             }
-            
+
             logger.info('All bot actions stopped');
-            
+
             // Restart anti-AFK if it was enabled
             if (config.minecraft.enableAntiAfk) {
                 setTimeout(() => {
@@ -592,7 +720,7 @@ class MinecraftBot {
                     logger.info('Anti-AFK system restarted');
                 }, 2000); // Wait 2 seconds before restarting
             }
-            
+
         } catch (error) {
             logger.error('Failed to stop bot actions:', error);
             throw error;
@@ -604,9 +732,82 @@ class MinecraftBot {
         if (this.bot && this.isConnected) {
             logger.info('Disconnecting from Minecraft server...');
             this.stopAntiAfk(); // Stop anti-AFK when disconnecting
+            this.stopPlayerTracking(); // Stop player tracking when disconnected
             this.bot.quit('Bot shutting down');
             this.isConnected = false;
         }
+    }
+
+    // Start tracking player positions to find the closest one
+    startPlayerTracking() {
+        if (!this.bot || !this.isConnected) return;
+
+        // Clear any existing interval to prevent duplicates
+        this.stopPlayerTracking();
+
+        // Update closest player every second
+        this.playerTrackingInterval = setInterval(() => {
+            if (!this.bot || !this.isConnected) return;
+
+            this.updateClosestPlayer();
+            // Update status message periodically, e.g., every 10 seconds
+            if (this.closestPlayer) {
+                const statusMessage = `Closest player: ${this.closestPlayer}`;
+                this.discordClient.setStatus('online', statusMessage);
+                logger.debug(statusMessage);
+            } else {
+                this.discordClient.setStatus('connected', ` - ${this.bot.game.dimension}`);
+            }
+        }, 1000); // Check every second
+
+        logger.info('Player tracking started');
+    }
+
+    // Stop player tracking
+    stopPlayerTracking() {
+        if (this.playerTrackingInterval) {
+            clearInterval(this.playerTrackingInterval);
+            this.playerTrackingInterval = null;
+            logger.info('Player tracking stopped');
+        }
+        // Reset closest player info
+        this.closestPlayer = null;
+        this.closestPlayerDistance = Infinity;
+    }
+
+    // Update the closest player to the bot
+    updateClosestPlayer() {
+        if (!this.bot || !this.isConnected || !this.bot.players) return;
+
+        let closestPlayer = null;
+        let minDistance = Infinity;
+
+        // Iterate over all online players
+        for (const playerName in this.bot.players) {
+            const player = this.bot.players[playerName];
+            if (player && player.entity && player.username !== this.bot.username) {
+                const distance = this.bot.entity.position.distanceTo(player.entity.position);
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    closestPlayer = player.username;
+                }
+            }
+        }
+
+        this.closestPlayer = closestPlayer;
+        this.closestPlayerDistance = minDistance;
+    }
+
+    // Method to get closest player info for Discord status
+    getClosestPlayerInfo() {
+        if (!this.closestPlayer) {
+            return null;
+        }
+        
+        return {
+            name: this.closestPlayer,
+            distance: Math.round(this.closestPlayerDistance)
+        };
     }
 }
 

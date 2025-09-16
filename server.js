@@ -75,13 +75,13 @@ class MinecraftDiscordBridge {
             logger.info('Connecting to Discord...');
             this.discordClient = new DiscordClient();
             await this.discordClient.connect();
-            
+
             // Set initial status to disconnected
             await this.discordClient.setStatus('disconnected');
 
             // Initialize Minecraft bot
             this.minecraftBot = new MinecraftBot(this.discordClient);
-            
+
             // Connect Discord client to Minecraft bot for slash commands
             this.discordClient.setMinecraftBot(this.minecraftBot);
 
@@ -108,7 +108,7 @@ class MinecraftDiscordBridge {
 
             // Connect the bot (authentication will be handled automatically)
             logger.info('Starting Minecraft bot connection...');
-            
+
             // Start timer to check if authentication was needed
             this.authCheckTimeout = setTimeout(() => {
                 if (!this.authMessageSent && this.discordClient && this.discordClient.channels && this.discordClient.channels.login) {
@@ -118,7 +118,7 @@ class MinecraftDiscordBridge {
                     });
                 }
             }, 5000); // Wait 5 seconds after connection attempt
-            
+
             this.minecraftBot.connect().catch((error) => {
                 logger.info('Bot connection failed, likely authentication required:', error.message);
                 logger.error('Connection error details:', error);
@@ -289,7 +289,6 @@ class MinecraftDiscordBridge {
                         .logo {
                             width: 80px;
                             height: 80px;
-                            margin: 0 auto 30px;
                             background: linear-gradient(135deg, #00ffff, #0080ff);
                             border-radius: 20px;
                             display: flex;
@@ -484,12 +483,12 @@ class MinecraftDiscordBridge {
                         <div class="particle"></div>
                         <div class="particle"></div>
                     </div>
-                    
+
                     <div class="login-container" id="loginContainer">
                         <div class="logo">🎮</div>
                         <h1>Minecraft Bot</h1>
                         <p class="subtitle">Secure Dashboard Access</p>
-                        
+
                         <form action="/login" method="post" id="loginForm">
                             <div class="input-group">
                                 <label for="password">Access Code</label>
@@ -501,7 +500,7 @@ class MinecraftDiscordBridge {
                             <button type="submit" class="login-button">
                                 <span>Access Dashboard</span>
                             </button>
-                            
+
                             <div class="loading" id="loading">
                                 <div class="loading-spinner"></div>
                                 <span style="color: #00ffff;">Authenticating...</span>
@@ -514,7 +513,7 @@ class MinecraftDiscordBridge {
                         document.getElementById('loginForm').addEventListener('submit', function(e) {
                             const button = document.querySelector('.login-button');
                             const loading = document.getElementById('loading');
-                            
+
                             button.style.opacity = '0.7';
                             button.disabled = true;
                             loading.classList.add('show');
@@ -550,6 +549,9 @@ class MinecraftDiscordBridge {
             const isOnline = this.minecraftBot && this.minecraftBot.isConnected;
             const playerCount = this.minecraftBot && this.minecraftBot.bot ? Object.keys(this.minecraftBot.bot.players).length : 0;
 
+            // Use detected username if available, fallback to config
+            const displayUsername = this.minecraftBot?.detectedUsername || config.minecraft.username || 'Unknown';
+            
             res.send(`
                 <!DOCTYPE html>
                 <html>
@@ -1115,17 +1117,17 @@ class MinecraftDiscordBridge {
                         <div class="auth-modal-content">
                             <h2><i class="fas fa-lock"></i> Authentication Required</h2>
                             <p>Please authenticate your Minecraft account to continue</p>
-                            
+
                             ${this.authCode ? `
                             <div class="auth-big-code">${this.authCode}</div>
                             ` : ''}
-                            
+
                             ${this.authUrl ? `
                             <a href="${this.authUrl}" target="_blank" class="auth-big-button">
                                 <i class="fas fa-external-link-alt"></i> Authenticate Now
                             </a>
                             ` : ''}
-                            
+
                             <div class="auth-steps">
                                 <h3><i class="fas fa-list-ol"></i> Authentication Steps</h3>
                                 <ol>
@@ -1169,7 +1171,7 @@ class MinecraftDiscordBridge {
 
                                 <div class="info-item">
                                     <div class="info-label"><i class="fas fa-user"></i> Username</div>
-                                    <div class="info-value">${config.minecraft.username}</div>
+                                    <div class="info-value">${displayUsername}</div>
                                 </div>
 
                                 <div class="info-item">
@@ -1232,11 +1234,11 @@ class MinecraftDiscordBridge {
                                 }, 30000);
                             }
                         }
-                        
+
                         document.addEventListener('DOMContentLoaded', function() {
                             // Start auth status checking
                             checkAuthStatus();
-                            
+
                             // Add staggered animation to cards
                             const cards = document.querySelectorAll('.card');
                             cards.forEach((card, index) => {
@@ -1358,16 +1360,16 @@ class MinecraftDiscordBridge {
 
                     // Set auth data on web server
                     self.setAuthData(authCode, authUrl);
-                    
+
                     // Mark that auth message was sent
                     self.authMessageSent = true;
-                    
+
                     // Clear the auth check timeout since we found an auth message
                     if (self.authCheckTimeout) {
                         clearTimeout(self.authCheckTimeout);
                         self.authCheckTimeout = null;
                     }
-                    
+
                     // Update Discord status to authentication mode
                     if (self.discordClient && self.discordClient.setStatus) {
                         self.discordClient.setStatus('authentication');
@@ -1430,13 +1432,13 @@ class MinecraftDiscordBridge {
                 // Clear auth data after successful authentication
                 self.authCode = null;
                 self.authUrl = null;
-                
+
                 // Clear the auth check timeout since authentication completed
                 if (self.authCheckTimeout) {
                     clearTimeout(self.authCheckTimeout);
                     self.authCheckTimeout = null;
                 }
-                
+
                 // Update Discord status to connected
                 if (self.discordClient && self.discordClient.setStatus) {
                     self.discordClient.setStatus('connected');
@@ -1457,15 +1459,15 @@ class MinecraftDiscordBridge {
         console.log = function(...args) {
             handleMessage('log', ...args);
         };
-        
+
         console.error = function(...args) {
             handleMessage('error', ...args);
         };
-        
+
         console.warn = function(...args) {
             handleMessage('warn', ...args);
         };
-        
+
         console.info = function(...args) {
             handleMessage('info', ...args);
         };

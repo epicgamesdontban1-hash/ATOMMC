@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, ChannelType, EmbedBuilder, SlashCommandBuilder, REST, Routes } = require('discord.js');
+const { Client, GatewayIntentBits, ChannelType, EmbedBuilder, SlashCommandBuilder, REST, Routes, Partials } = require('discord.js');
 const fetch = require('node-fetch');
 const config = require('./config');
 const logger = require('./logger');
@@ -19,6 +19,8 @@ class DiscordClient {
         this.pendingMessages = new Map(); // For batching messages by timestamp
         this.batchTimeout = null;
         this.minecraftBot = null; // Reference to minecraft bot for sending messages
+        this.statusMessageId = null; // Persistent status message for reactions
+        this.reactionDebounce = new Map(); // Prevent reaction spam
     }
 
     async connect() {
@@ -37,14 +39,25 @@ class DiscordClient {
             this.client = new Client({
                 intents: [
                     GatewayIntentBits.Guilds,
-                    GatewayIntentBits.GuildMessages
+                    GatewayIntentBits.GuildMessages,
+                    GatewayIntentBits.GuildMessageReactions
+                ],
+                partials: [
+                    Partials.Message,
+                    Partials.Channel,
+                    Partials.Reaction,
+                    Partials.User
                 ]
             });
 
             this.client.once('ready', async () => {
                 logger.info(`Discord bot logged in as ${this.client.user.tag}`);
                 await this.setupSlashCommands();
-                this.setupChannels();
+                try {
+                    await this.setupChannels();
+                } catch (error) {
+                    logger.warn('Continuing without full channel setup:', error.message);
+                }
                 this.isConnected = true;
                 // Set initial status
                 await this.setStatus('startup');
@@ -63,6 +76,11 @@ class DiscordClient {
             this.client.on('interactionCreate', async (interaction) => {
                 if (!interaction.isChatInputCommand()) return;
                 await this.handleSlashCommand(interaction);
+            });
+
+            // Handle reaction-based bot control
+            this.client.on('messageReactionAdd', async (reaction, user) => {
+                await this.handleReactionAdd(reaction, user);
             });
 
             await this.client.login(config.discord.token);
@@ -158,10 +176,13 @@ class DiscordClient {
 
     async setupChannels() {
         try {
-            // Setup all channels
-            const channelTypes = ['logs', 'login', 'status', 'playerList'];
+            // Setup critical channels (required)
+            const criticalChannels = ['logs', 'login', 'status'];
+            // Setup optional channels
+            const optionalChannels = ['playerList'];
 
-            for (const type of channelTypes) {
+            // Setup critical channels first
+            for (const type of criticalChannels) {
                 const channelId = config.discord.channels[type];
                 this.channels[type] = await this.client.channels.fetch(channelId);
 
@@ -176,6 +197,28 @@ class DiscordClient {
                 logger.info(`Connected to Discord ${type} channel: #${this.channels[type].name}`);
             }
 
+            // Setup optional channels (skip if they fail)
+            for (const type of optionalChannels) {
+                try {
+                    const channelId = config.discord.channels[type];
+                    if (channelId) {
+                        this.channels[type] = await this.client.channels.fetch(channelId);
+                        
+                        if (this.channels[type] && this.channels[type].type === ChannelType.GuildText) {
+                            logger.info(`Connected to Discord ${type} channel: #${this.channels[type].name}`);
+                        } else {
+                            logger.warn(`${type.toUpperCase()} channel is not a text channel, skipping`);
+                            this.channels[type] = null;
+                        }
+                    } else {
+                        logger.warn(`${type.toUpperCase()} channel ID not provided, skipping`);
+                    }
+                } catch (channelError) {
+                    logger.warn(`Failed to setup ${type} channel:`, channelError.message);
+                    this.channels[type] = null;
+                }
+            }
+
             // Send startup status embed
             await this.sendStatusEmbed('Starting up', 'Minecraft bot is initializing...', 0xFFFF00);
 
@@ -184,6 +227,91 @@ class DiscordClient {
         } catch (error) {
             logger.error('Failed to setup Discord channels:', error);
             throw error;
+        }
+    }
+
+    async handleReactionAdd(reaction, user) {
+        try {
+            // Handle partial reactions
+            if (reaction.partial) {
+                try {
+                    await reaction.fetch();
+                } catch (error) {
+                    logger.warn('Failed to fetch partial reaction:', error.message);
+                    return;
+                }
+            }
+            
+            // Ignore bot reactions
+            if (user.bot) return;
+            
+            // Only handle reactions on our status message
+            if (!this.statusMessageId || reaction.message.id !== this.statusMessageId) return;
+            
+            // Check if this is in the status channel
+            if (!this.channels.status || reaction.message.channel.id !== this.channels.status.id) return;
+            
+            // Basic authorization - only allow members with admin permissions or manage server
+            const member = await reaction.message.guild.members.fetch(user.id).catch(() => null);
+            if (!member || (!member.permissions.has('Administrator') && !member.permissions.has('ManageGuild'))) {
+                logger.warn(`${user.username} attempted to control bot without permissions`);
+                // Remove the reaction
+                try {
+                    await reaction.users.remove(user.id);
+                } catch (removeError) {
+                    logger.debug('Failed to remove unauthorized reaction:', removeError.message);
+                }
+                return;
+            }
+            
+            // Debounce to prevent reaction spam
+            const userId = user.id;
+            const debounceKey = `${userId}_${reaction.emoji.name}`;
+            
+            if (this.reactionDebounce.has(debounceKey)) {
+                const lastReaction = this.reactionDebounce.get(debounceKey);
+                if (Date.now() - lastReaction < 3000) { // 3 second cooldown
+                    logger.debug(`Reaction debounced for user ${user.username}`);
+                    return;
+                }
+            }
+            
+            this.reactionDebounce.set(debounceKey, Date.now());
+            
+            // Handle different reactions
+            const emojiName = reaction.emoji.name;
+            
+            if (emojiName === '✅') {
+                // Connect/Resume bot
+                logger.info(`${user.username} requested bot connection via reaction`);
+                
+                if (this.minecraftBot && !this.minecraftBot.isConnected) {
+                    this.minecraftBot.resumeReconnect();
+                    await this.sendStatusEmbed('🔄 Connecting...', 'Connection requested via Discord reaction', 0xFFAA00);
+                } else if (this.minecraftBot && this.minecraftBot.isConnected) {
+                    logger.info('Bot is already connected');
+                }
+                
+            } else if (emojiName === '❌') {
+                // Disconnect bot
+                logger.info(`${user.username} requested bot disconnection via reaction`);
+                
+                if (this.minecraftBot && this.minecraftBot.isConnected) {
+                    await this.minecraftBot.disconnect();
+                } else {
+                    logger.info('Bot is already disconnected');
+                }
+            }
+            
+            // Remove the user's reaction for cleanliness (optional)
+            try {
+                await reaction.users.remove(user.id);
+            } catch (removeError) {
+                logger.debug('Failed to remove user reaction:', removeError.message);
+            }
+            
+        } catch (error) {
+            logger.error('Error handling reaction:', error);
         }
     }
 
@@ -339,15 +467,21 @@ class DiscordClient {
         let statusText = description;
         let embedColor = color;
         
+        // Use detected username if available, fallback to config
+        const displayUsername = bot?.detectedUsername || config.minecraft.username || 'Unknown';
+        
+        // Get closest player info
+        const closestPlayerInfo = bot?.getClosestPlayerInfo?.() || null;
+        
         // Map common status messages to cleaner descriptions
         if (title.includes('Connected') || description.includes('connected') || description.includes('online')) {
-            statusText = `Connected to **${config.minecraft.host}** as **${config.minecraft.username}**`;
+            statusText = `Connected to **${config.minecraft.host}** as **${displayUsername}**`;
             embedColor = 0x2ECC71; // Green
         } else if (title.includes('Disconnected') || description.includes('disconnected') || description.includes('offline')) {
             statusText = `Disconnected from **${config.minecraft.host}**`;
             embedColor = 0xE74C3C; // Red
         } else if (title.includes('Starting') || description.includes('initializing') || description.includes('starting')) {
-            statusText = `Connecting to **${config.minecraft.host}** as **${config.minecraft.username}**`;
+            statusText = `Connecting to **${config.minecraft.host}** as **${displayUsername}**`;
             embedColor = 0xF39C12; // Orange
         } else if (title.includes('Authentication') || description.includes('authenticate')) {
             statusText = `Waiting for authentication to **${config.minecraft.host}**`;
@@ -373,12 +507,17 @@ class DiscordClient {
                     inline: true 
                 },
                 { 
+                    name: 'Nearest Player', 
+                    value: closestPlayerInfo ? `**${closestPlayerInfo.name}**\n${closestPlayerInfo.distance} blocks away` : 'None detected', 
+                    inline: true 
+                },
+                { 
                     name: 'Features', 
                     value: `**Anti-AFK:** ${config.minecraft.enableAntiAfk ? 'Enabled' : 'Disabled'}\n**Auth:** Microsoft\n**Auto-Reconnect:** Enabled`, 
                     inline: true 
                 }
             )
-            .setFooter({ text: `Bot Username: ${config.minecraft.username}` })
+            .setFooter({ text: `Bot Username: ${displayUsername} | React with ✅ to connect, ❌ to disconnect` })
             .setTimestamp();
 
         if (!this.isConnected) {
@@ -388,24 +527,40 @@ class DiscordClient {
 
         try {
             if (this.channels.status) {
-                // Edit the specific status message instead of sending new ones
-                const statusMessageId = config.discord.statusMessageId;
-                if (statusMessageId) {
+                let message;
+                
+                if (this.statusMessageId) {
+                    // Try to edit existing persistent status message
                     try {
-                        const message = await this.channels.status.messages.fetch(statusMessageId);
+                        message = await this.channels.status.messages.fetch(this.statusMessageId);
                         await message.edit({ embeds: [embed] });
+                        logger.debug('Updated existing status message');
                     } catch (fetchError) {
-                        // If message doesn't exist or can't be edited, send new message
-                        await this.channels.status.send({ embeds: [embed] });
+                        logger.warn('Failed to fetch existing status message, creating new one');
+                        message = await this.channels.status.send({ embeds: [embed] });
+                        this.statusMessageId = message.id;
+                        await this.addStatusReactions(message);
                     }
                 } else {
-                    // Send new message if no status message ID configured
-                    await this.channels.status.send({ embeds: [embed] });
+                    // Create new persistent status message
+                    message = await this.channels.status.send({ embeds: [embed] });
+                    this.statusMessageId = message.id;
+                    logger.info(`Created persistent status message with ID: ${this.statusMessageId}`);
+                    await this.addStatusReactions(message);
                 }
             }
         } catch (error) {
             logger.error('Failed to send status embed:', error.message || error);
-            // Don't requeue status embeds to avoid spam
+        }
+    }
+
+    async addStatusReactions(message) {
+        try {
+            await message.react('✅'); // Connect/Resume
+            await message.react('❌'); // Disconnect
+            logger.debug('Added status control reactions to message');
+        } catch (error) {
+            logger.warn('Failed to add reactions to status message:', error.message);
         }
     }
 
@@ -610,12 +765,14 @@ class DiscordClient {
                     const bot = this.minecraftBot;
                     const isOnline = bot?.isConnected;
                     const playerCount = bot?.players?.size || 0;
+                    const closestPlayerInfo = bot?.getClosestPlayerInfo?.() || null;
+                    const displayUsername = bot?.detectedUsername || config.minecraft.username || 'Unknown';
                     
                     const embed = new EmbedBuilder()
                         .setColor(isOnline ? 0x2ECC71 : 0xE74C3C)
                         .setTitle('Bot Status')
                         .setDescription(isOnline ? 
-                            `Connected to **${config.minecraft.host}** as **${config.minecraft.username}**` : 
+                            `Connected to **${config.minecraft.host}** as **${displayUsername}**` : 
                             `Disconnected from **${config.minecraft.host}**`
                         )
                         .addFields(
@@ -630,12 +787,17 @@ class DiscordClient {
                                 inline: true 
                             },
                             { 
+                                name: 'Nearest Player', 
+                                value: closestPlayerInfo ? `**${closestPlayerInfo.name}**\n${closestPlayerInfo.distance} blocks away` : 'None detected', 
+                                inline: true 
+                            },
+                            { 
                                 name: 'Features', 
                                 value: `**Anti-AFK:** ${config.minecraft.enableAntiAfk ? 'Enabled' : 'Disabled'}\n**Auth:** Microsoft\n**Auto-Reconnect:** Enabled`, 
                                 inline: true 
                             }
                         )
-                        .setFooter({ text: `Bot Username: ${config.minecraft.username}` })
+                        .setFooter({ text: `Bot Username: ${displayUsername}` })
                         .setTimestamp();
                     
                     await interaction.reply({ embeds: [embed], ephemeral: true });
