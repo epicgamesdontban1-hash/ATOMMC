@@ -87,3 +87,33 @@ Preferred communication style: Simple, everyday language.
 - Node.js runtime environment
 - File system access for authentication token caching
 - Network connectivity to both Minecraft servers and Discord API endpoints
+
+## Recent Changes
+
+### Replit Environment Setup (September 22, 2025)
+
+**Configuration Updates**
+- Modified `config.js` to make Discord integration optional for development
+- Added `config.discord.enabled` flag to gracefully handle missing Discord credentials
+- Updated `server.js` to conditionally initialize Discord client based on configuration
+- Added null checks throughout the codebase for Discord client references
+
+**Deployment Configuration**
+- Configured for VM deployment target to maintain stateful connections
+- Web server binds to `0.0.0.0:5000` for Replit proxy compatibility
+- Authentication sessions and WebSocket connections persist across requests
+- Minecraft bot authentication requires manual setup on first run
+
+**Development Mode**
+- Application can run in web-only mode without Discord credentials
+- Chat monitoring interface accessible at `/login` (password: "Agent")
+- Minecraft authentication prompts appear in server logs and require manual completion
+- Environment warnings for missing Discord configuration are informational only
+
+**Required Environment Variables for Full Functionality**
+- `DISCORD_BOT_TOKEN`: Discord bot token for integration
+- `DISCORD_LOGS_CHANNEL_ID`: Channel ID for chat logs
+- `DISCORD_LOGIN_CHANNEL_ID`: Channel ID for authentication messages  
+- `DISCORD_STATUS_CHANNEL_ID`: Channel ID for bot status updates
+- `DISCORD_PLAYER_LIST_CHANNEL_ID`: Channel ID for player list updates
+- Alternative: `DISCORD_WEBHOOK_URL` for webhook-only messaging

@@ -22,6 +22,7 @@ class MinecraftBot {
         this.closestPlayer = null; // Track the player closest to the bot
         this.closestPlayerDistance = Infinity; // Track the distance to the closest player
         this.playerTrackingInterval = null; // Interval for tracking player positions
+        this.statusUpdateInterval = null; // Interval for status updates
     }
 
     async connect() {
@@ -163,6 +164,11 @@ class MinecraftBot {
 
             // Initialize player list (this will handle adding the bot properly)
             this.initializePlayerList();
+            
+            // Update player list when bot joins server (with slight delay to ensure Discord is ready)
+            setTimeout(() => {
+                this.updatePlayerList();
+            }, 1000);
 
             // Start anti-AFK behavior only if enabled
             if (config.minecraft.enableAntiAfk) {
@@ -174,12 +180,16 @@ class MinecraftBot {
 
             // Start tracking player positions
             this.startPlayerTracking();
+            
+            // Start status update interval (every minute)
+            this.startStatusUpdates();
         });
 
         this.bot.on('end', (reason) => {
             this.isConnected = false;
             this.stopAntiAfk(); // Stop anti-AFK when disconnected
             this.stopPlayerTracking(); // Stop player tracking when disconnected
+            this.stopStatusUpdates(); // Stop status updates when disconnected
             logger.warn(`Bot disconnected: ${reason}`);
             this.discordClient.sendStatusEmbed('Disconnected', `Bot lost connection: ${reason}`, 0xFF0000);
 
@@ -247,7 +257,6 @@ class MinecraftBot {
                 const username = player.username.trim();
                 this.players.add(username);
                 logger.info(`Player joined: ${username} (Total: ${this.players.size})`);
-                this.updatePlayerList();
             } else {
                 logger.warn('Attempted to add player with invalid username:', player);
             }
@@ -259,7 +268,6 @@ class MinecraftBot {
                 const username = player.username.trim();
                 const wasRemoved = this.players.delete(username);
                 logger.info(`Player left: ${username} (Removed: ${wasRemoved}, Total: ${this.players.size})`);
-                this.updatePlayerList();
             } else {
                 logger.warn('Attempted to remove player with invalid username:', player);
             }
@@ -281,6 +289,15 @@ class MinecraftBot {
 
         // Log all chat messages
         logger.info(`Chat: ${message}`);
+
+        // Check for keywords in player chat (not system messages)
+        if (sender && typeof message === 'string') {
+            const lowerMessage = message.toLowerCase();
+            if (lowerMessage.includes('lootedbycgy') || lowerMessage.includes('doggo')) {
+                // DM user ID 915483308522086460 with message link
+                this.discordClient.sendKeywordAlert(sender, message, '915483308522086460');
+            }
+        }
 
         // Send to Discord
         if (sender) {
@@ -733,6 +750,7 @@ class MinecraftBot {
             logger.info('Disconnecting from Minecraft server...');
             this.stopAntiAfk(); // Stop anti-AFK when disconnecting
             this.stopPlayerTracking(); // Stop player tracking when disconnected
+            this.stopStatusUpdates(); // Stop status updates when disconnected
             this.bot.quit('Bot shutting down');
             this.isConnected = false;
         }
@@ -770,9 +788,7 @@ class MinecraftBot {
             this.playerTrackingInterval = null;
             logger.info('Player tracking stopped');
         }
-        // Reset closest player info
-        this.closestPlayer = null;
-        this.closestPlayerDistance = Infinity;
+        // Keep last detected player info instead of resetting
     }
 
     // Update the closest player to the bot
@@ -808,6 +824,32 @@ class MinecraftBot {
             name: this.closestPlayer,
             distance: Math.round(this.closestPlayerDistance)
         };
+    }
+
+    // Start status updates every minute
+    startStatusUpdates() {
+        if (!this.discordClient || !this.isConnected) return;
+
+        // Clear any existing interval
+        this.stopStatusUpdates();
+
+        // Update status every minute
+        this.statusUpdateInterval = setInterval(() => {
+            if (!this.isConnected || !this.discordClient) return;
+            
+            this.discordClient.sendStatusEmbed('🤖 Bot Status', 'Regular status update', 0x2ECC71);
+        }, 60000); // 60 seconds
+
+        logger.info('Status updates started (every minute)');
+    }
+
+    // Stop status updates
+    stopStatusUpdates() {
+        if (this.statusUpdateInterval) {
+            clearInterval(this.statusUpdateInterval);
+            this.statusUpdateInterval = null;
+            logger.info('Status updates stopped');
+        }
     }
 }
 

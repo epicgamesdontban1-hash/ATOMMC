@@ -71,19 +71,26 @@ class MinecraftDiscordBridge {
             logger.info(`- RENDER: ${process.env.RENDER}`);
             logger.info(`- Is Production: ${process.env.NODE_ENV === 'production' || !!process.env.RENDER}`);
 
-            // Initialize Discord client
-            logger.info('Connecting to Discord...');
-            this.discordClient = new DiscordClient();
-            await this.discordClient.connect();
+            // Initialize Discord client only if enabled
+            if (config.discord.enabled) {
+                logger.info('Connecting to Discord...');
+                this.discordClient = new DiscordClient();
+                await this.discordClient.connect();
 
-            // Set initial status to disconnected
-            await this.discordClient.setStatus('disconnected');
+                // Set initial status to disconnected
+                await this.discordClient.setStatus('disconnected');
+            } else {
+                logger.info('Discord integration disabled - running in web-only mode');
+                this.discordClient = null;
+            }
 
             // Initialize Minecraft bot
             this.minecraftBot = new MinecraftBot(this.discordClient);
 
             // Connect Discord client to Minecraft bot for slash commands
-            this.discordClient.setMinecraftBot(this.minecraftBot);
+            if (this.discordClient) {
+                this.discordClient.setMinecraftBot(this.minecraftBot);
+            }
 
             // Setup console capture for authentication prompts
             this.setupConsoleCapture();

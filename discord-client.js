@@ -20,6 +20,7 @@ class DiscordClient {
         this.batchTimeout = null;
         this.minecraftBot = null; // Reference to minecraft bot for sending messages
         this.statusMessageId = null; // Persistent status message for reactions
+        this.playerListMessageId = null; // Persistent player list message
         this.reactionDebounce = new Map(); // Prevent reaction spam
     }
 
@@ -286,6 +287,7 @@ class DiscordClient {
                 logger.info(`${user.username} requested bot connection via reaction`);
                 
                 if (this.minecraftBot && !this.minecraftBot.isConnected) {
+                    this.minecraftBot.shouldReconnect = true;
                     this.minecraftBot.resumeReconnect();
                     await this.sendStatusEmbed('🔄 Connecting...', 'Connection requested via Discord reaction', 0xFFAA00);
                 } else if (this.minecraftBot && this.minecraftBot.isConnected) {
@@ -293,11 +295,15 @@ class DiscordClient {
                 }
                 
             } else if (emojiName === '❌') {
-                // Disconnect bot
-                logger.info(`${user.username} requested bot disconnection via reaction`);
+                // Shutdown bot - disable reconnection
+                logger.info(`${user.username} requested bot shutdown via reaction`);
                 
-                if (this.minecraftBot && this.minecraftBot.isConnected) {
-                    await this.minecraftBot.disconnect();
+                if (this.minecraftBot) {
+                    this.minecraftBot.shouldReconnect = false;
+                    if (this.minecraftBot.isConnected) {
+                        await this.minecraftBot.disconnect();
+                    }
+                    await this.sendStatusEmbed('⛔ Shutdown', 'Bot manually stopped via Discord reaction', 0xE74C3C);
                 } else {
                     logger.info('Bot is already disconnected');
                 }
@@ -583,26 +589,35 @@ class DiscordClient {
 
         try {
             if (this.channels.playerList) {
-                if (config.discord.playerListMessageId) {
-                    // Try to edit existing message
+                // Use hardcoded player list message ID from secrets if available, otherwise use stored ID
+                const targetPlayerListMessageId = process.env.DISCORD_PLAYER_LIST_MESSAGE_ID || this.playerListMessageId;
+                
+                if (targetPlayerListMessageId) {
+                    // Try to edit existing persistent player list message
                     try {
-                        const message = await this.channels.playerList.messages.fetch(config.discord.playerListMessageId);
+                        const message = await this.channels.playerList.messages.fetch(targetPlayerListMessageId);
                         await message.edit({ embeds: [embed] });
-                        logger.info('✅ Player list updated successfully');
+                        logger.debug('Player list updated successfully');
+                        // Store the hardcoded message ID if we successfully used it
+                        if (process.env.DISCORD_PLAYER_LIST_MESSAGE_ID) {
+                            this.playerListMessageId = process.env.DISCORD_PLAYER_LIST_MESSAGE_ID;
+                        }
+                        return;
                     } catch (fetchError) {
-                        // If message doesn't exist, send new one
-                        const sentMessage = await this.channels.playerList.send({ embeds: [embed] });
-                        logger.warn(`⚠️ Created new player list message. Update config with message ID: ${sentMessage.id}`);
+                        logger.warn('Failed to fetch existing player list message, creating new one');
+                        this.playerListMessageId = null;
                     }
-                } else {
-                    // Send new message and log the ID
-                    const sentMessage = await this.channels.playerList.send({ embeds: [embed] });
-                    logger.warn(`⚠️ Player list message sent. Add this to your config: DISCORD_PLAYER_LIST_MESSAGE_ID=${sentMessage.id}`);
                 }
+                
+                // Create new persistent message
+                const sentMessage = await this.channels.playerList.send({ embeds: [embed] });
+                this.playerListMessageId = sentMessage.id;
+                logger.info(`Created new player list message with ID: ${this.playerListMessageId}`);
             }
         } catch (error) {
             logger.error('Failed to send player list embed:', error.message || error);
-            // Don't requeue to prevent infinite loops, just log the error
+            // Reset message ID on failure so we try to create a new one next time
+            this.playerListMessageId = null;
         }
     }
 
@@ -1021,6 +1036,23 @@ class DiscordClient {
 
             this.client.destroy();
             this.isConnected = false;
+        }
+    }
+
+    async sendKeywordAlert(sender, message, userId) {
+        try {
+            if (!this.client) {
+                logger.warn('Cannot send DM - Discord client not available');
+                return;
+            }
+
+            const user = await this.client.users.fetch(userId);
+            const messageLink = `Message from **${sender}**: ${message}`;
+            
+            await user.send(messageLink);
+            logger.info(`Keyword alert sent to user ${userId}: ${sender} mentioned keywords`);
+        } catch (error) {
+            logger.error('Failed to send keyword alert DM:', error);
         }
     }
 }

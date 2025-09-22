@@ -40,13 +40,20 @@ function validateConfig() {
         'minecraft.username'
     ];
 
-    // Require either Discord bot token + channel ID or webhook URL
+    // Make Discord configuration optional for demo/development purposes
+    // Log warnings if Discord is not configured but don't block startup
     if (!config.discord.token && !config.discord.webhook) {
-        throw new Error('Either DISCORD_BOT_TOKEN with DISCORD_CHANNEL_ID or DISCORD_WEBHOOK_URL must be provided');
-    }
-
-    if (config.discord.token && (!config.discord.channels.logs || !config.discord.channels.login || !config.discord.channels.status)) {
-        throw new Error('Required Discord channel IDs missing: DISCORD_LOGS_CHANNEL_ID, DISCORD_LOGIN_CHANNEL_ID, DISCORD_STATUS_CHANNEL_ID are required when using bot token');
+        console.warn('Warning: No Discord configuration found. Discord integration will be disabled.');
+        console.warn('To enable Discord integration, set DISCORD_BOT_TOKEN or DISCORD_WEBHOOK_URL environment variables.');
+        // Mark Discord as disabled
+        config.discord.enabled = false;
+    } else {
+        config.discord.enabled = true;
+        
+        // Only validate Discord channels if Discord is enabled
+        if (config.discord.token && (!config.discord.channels.logs || !config.discord.channels.login || !config.discord.channels.status)) {
+            throw new Error('Required Discord channel IDs missing: DISCORD_LOGS_CHANNEL_ID, DISCORD_LOGIN_CHANNEL_ID, DISCORD_STATUS_CHANNEL_ID are required when using bot token');
+        }
     }
 
     for (const path of required) {
