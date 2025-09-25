@@ -52,7 +52,7 @@ class MinecraftDiscordBridge {
         this.authUrl = null;
         this.authTimeout = null;
         this.isAuthenticated = false;
-        this.password = 'Agent'; // Default password
+        this.password = config.web.password; // Use password from config/environment
         this.authMessageSent = false;
         this.authCheckTimeout = null;
     }

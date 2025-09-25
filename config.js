@@ -1,31 +1,33 @@
+
 require('dotenv').config();
 
 const config = {
     minecraft: {
-        host: process.env.MINECRAFT_HOST || 'play.atommc.co.za',
+        host: process.env.MINECRAFT_HOST || 'localhost',
         port: parseInt(process.env.MINECRAFT_PORT) || 25565,
-        username: process.env.MINECRAFT_USERNAME || 'Hakiiyooo',
+        username: process.env.MINECRAFT_USERNAME || 'MinecraftBot',
         version: process.env.MINECRAFT_VERSION || '1.20.4',
         auth: process.env.MINECRAFT_AUTH || 'microsoft',
         reconnectDelay: parseInt(process.env.RECONNECT_DELAY) || 15000,
-        maxReconnectAttempts: parseInt(process.env.MAX_RECONNECT_ATTEMPTS) || 100000000,
+        maxReconnectAttempts: parseInt(process.env.MAX_RECONNECT_ATTEMPTS) || 100,
         enableAntiAfk: process.env.ENABLE_ANTI_AFK === 'true'
     },
     web: {
-        password: process.env.WEB_PASSWORD || 'Agent',
+        password: process.env.WEB_PASSWORD || 'defaultpass',
         authTimeout: parseInt(process.env.AUTH_TIMEOUT) || 15 * 60 * 1000 // 15 minutes
     },
     discord: {
         token: process.env.DISCORD_BOT_TOKEN,
         channels: {
-            logs: process.env.DISCORD_LOGS_CHANNEL_ID || '1411683165222862989',
-            login: process.env.DISCORD_LOGIN_CHANNEL_ID || '1411379478294298805',
-            status: process.env.DISCORD_STATUS_CHANNEL_ID || '1411683202128678944',
-            playerList: process.env.DISCORD_PLAYER_LIST_CHANNEL_ID || '1412068774646907014'
+            logs: process.env.DISCORD_LOGS_CHANNEL_ID,
+            login: process.env.DISCORD_LOGIN_CHANNEL_ID,
+            status: process.env.DISCORD_STATUS_CHANNEL_ID,
+            playerList: process.env.DISCORD_PLAYER_LIST_CHANNEL_ID
         },
-        playerListMessageId: process.env.DISCORD_PLAYER_LIST_MESSAGE_ID || '1412069288025526373',
-        statusMessageId: process.env.DISCORD_STATUS_MESSAGE_ID || '',
-        webhook: process.env.DISCORD_WEBHOOK_URL || ''
+        playerListMessageId: process.env.DISCORD_PLAYER_LIST_MESSAGE_ID,
+        statusMessageId: process.env.DISCORD_STATUS_MESSAGE_ID,
+        webhook: process.env.DISCORD_WEBHOOK_URL,
+        pingUserId: process.env.DISCORD_PING_USER_ID // For login notifications
     },
     logging: {
         level: process.env.LOG_LEVEL || 'info',

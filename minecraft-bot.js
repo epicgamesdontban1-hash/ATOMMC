@@ -23,6 +23,7 @@ class MinecraftBot {
         this.closestPlayerDistance = Infinity; // Track the distance to the closest player
         this.playerTrackingInterval = null; // Interval for tracking player positions
         this.statusUpdateInterval = null; // Interval for status updates
+        this.connectionStartTime = null; // Track when connection was established
     }
 
     async connect() {
@@ -155,7 +156,8 @@ class MinecraftBot {
         // Connection events
         this.bot.on('spawn', () => {
             logger.info(`Bot spawned in world: ${this.bot.game.dimension}`);
-            // Don't send status embed here since it's already sent in the connect() method
+            // Track when connection was established to prevent initial player flood
+            this.connectionStartTime = Date.now();
             
             // Update Discord bot status to connected
             if (this.discordClient && this.discordClient.setStatus) {
@@ -255,8 +257,29 @@ class MinecraftBot {
             // Only add players with valid usernames
             if (player && player.username && typeof player.username === 'string' && player.username.trim() !== '') {
                 const username = player.username.trim();
-                this.players.add(username);
-                logger.info(`Player joined: ${username} (Total: ${this.players.size})`);
+                // Don't add the bot itself to the player list
+                if (username !== this.bot.username) {
+                    // Check if player is already in our list (to prevent duplicate join messages)
+                    const wasAlreadyOnline = this.players.has(username);
+                    this.players.add(username);
+                    
+                    // Only send join message if this is a NEW player AND we've been connected for more than 5 seconds
+                    // This prevents flood of join messages when bot first connects
+                    const hasBeenConnectedLongEnough = this.isConnected && (Date.now() - this.connectionStartTime) > 5000;
+                    
+                    if (!wasAlreadyOnline && hasBeenConnectedLongEnough) {
+                        logger.info(`Player joined: ${username} (Total: ${this.players.size})`);
+                        
+                        // Send join message to Discord as server message (only for actual new joins)
+                        const joinMessage = `${username} joined the game`;
+                        this.discordClient.sendChatMessage('Server', joinMessage, true);
+                    } else {
+                        logger.debug(`Player ${username} ${wasAlreadyOnline ? 'already in list' : 'detected during initial sync'}, skipping join message`);
+                    }
+                    
+                    // Update player list immediately
+                    setTimeout(() => this.updatePlayerList(), 1000);
+                }
             } else {
                 logger.warn('Attempted to add player with invalid username:', player);
             }
@@ -267,7 +290,20 @@ class MinecraftBot {
             if (player && player.username && typeof player.username === 'string' && player.username.trim() !== '') {
                 const username = player.username.trim();
                 const wasRemoved = this.players.delete(username);
-                logger.info(`Player left: ${username} (Removed: ${wasRemoved}, Total: ${this.players.size})`);
+                
+                // Only send leave message if player was actually in our list
+                if (wasRemoved) {
+                    logger.info(`Player left: ${username} (Total: ${this.players.size})`);
+                    
+                    // Send leave message to Discord as server message
+                    const leaveMessage = `${username} left the game`;
+                    this.discordClient.sendChatMessage('Server', leaveMessage, true);
+                } else {
+                    logger.debug(`Player ${username} was not in list, skipping leave message`);
+                }
+                
+                // Update player list immediately
+                setTimeout(() => this.updatePlayerList(), 1000);
             } else {
                 logger.warn('Attempted to remove player with invalid username:', player);
             }
@@ -299,19 +335,21 @@ class MinecraftBot {
             }
         }
 
-        // Send to Discord
+        // Send messages to Discord
         if (sender) {
-            // Player message - send directly as bot message
+            // Player message - send with player info
             this.discordClient.sendChatMessage(sender, message, false);
         } else {
-            // Server message - check if it should be batched
-            const shouldBatch = this.discordClient.batchMessage(message, true);
-            if (!shouldBatch) {
-                this.discordClient.sendChatMessage('Server', message, true);
+            // Server message - filter out join/leave messages to prevent duplicates
+            // (these are already handled by playerJoined/playerLeft events)
+            if (message.includes(' joined the game') || message.includes(' left the game')) {
+                logger.debug(`Skipping duplicate join/leave message: ${message}`);
+                return; // Don't send these, they're handled by events
             }
+            
+            // Send other server messages to Discord
+            this.discordClient.sendChatMessage('Server', message, true);
         }
-
-
     }
 
     async disconnect() {
@@ -543,14 +581,13 @@ class MinecraftBot {
             Object.values(this.bot.players).forEach(player => {
                 // Only add players with valid usernames and exclude undefined/null values
                 if (player && player.username && typeof player.username === 'string' && player.username.trim() !== '') {
-                    this.players.add(player.username.trim());
+                    const username = player.username.trim();
+                    // Don't add the bot itself to the player list
+                    if (username !== this.bot.username) {
+                        this.players.add(username);
+                    }
                 }
             });
-        }
-
-        // Ensure the bot itself is in the list if it has a valid username
-        if (this.bot.username && typeof this.bot.username === 'string' && this.bot.username.trim() !== '') {
-            this.players.add(this.bot.username.trim());
         }
 
         logger.info(`Synced player list with server - ${this.players.size} players currently online: [${Array.from(this.players).join(', ')}]`);

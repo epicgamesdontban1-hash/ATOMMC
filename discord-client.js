@@ -362,21 +362,101 @@ class DiscordClient {
 
         try {
             if (this.channels.logs) {
-                // For player messages, send with player name
                 if (!isServerMessage) {
-                    const formattedMessage = `**${playerName}**: ${message}`;
-                    await this.channels.logs.send(formattedMessage);
-                } else {
-                    // For server messages, keep embed format
+                    // Enhanced player message format with rank detection
+                    const rankMatch = message.match(/^\[([^\]]+)\]/);
+                    const cleanMessage = rankMatch ? message.replace(/^\[[^\]]+\]\s*/, '') : message;
+                    const playerRank = rankMatch ? rankMatch[1] : null;
+                    
+                    // Determine color based on rank
+                    let playerColor = 0x5865F2; // Default Discord blurple
+                    if (playerRank) {
+                        if (playerRank.includes('AGENT')) playerColor = 0xFF0000; // Red for agents
+                        else if (playerRank.includes('Pioneer')) playerColor = 0x9B59B6; // Purple for pioneers
+                        else if (playerRank.includes('Scout')) playerColor = 0x2ECC71; // Green for scouts
+                        else if (playerRank.includes('VIP')) playerColor = 0xF1C40F; // Gold for VIP
+                    }
+                    
                     const embed = new EmbedBuilder()
-                        .setColor(0x00FF00)
+                        .setColor(playerColor)
                         .setAuthor({
-                            name: 'Server',
-                            iconURL: 'https://i.imgur.com/5ZzpCmx.png'
+                            name: playerRank ? `${playerName} [${playerRank}]` : playerName,
+                            iconURL: `https://mc-heads.net/avatar/${playerName}/32`
                         })
-                        .setDescription(message)
+                        .setDescription(`💬 **${cleanMessage}**`)
                         .setTimestamp()
-                        .setFooter({ text: 'Minecraft Chat' });
+                        .setFooter({ 
+                            text: `🎮 ${config.minecraft.host} • Player Chat`, 
+                            iconURL: 'https://mc-heads.net/avatar/MHF_Steve/16'
+                        });
+
+                    await this.channels.logs.send({ embeds: [embed] });
+                } else {
+                    // Enhanced server message format with better categorization
+                    let messageColor = 0x57F287; // Default green
+                    let messageIcon = '📢';
+                    let messageCategory = 'Server Message';
+                    let authorName = 'Server System';
+                    let authorIcon = 'https://mc-heads.net/avatar/MHF_Question/32';
+                    
+                    // Extract player name from server messages for avatar
+                    let detectedPlayer = null;
+                    
+                    // Try to extract player name from various message formats
+                    if (message.includes('joined the game')) {
+                        const joinMatch = message.match(/^(\w+) joined the game/);
+                        detectedPlayer = joinMatch ? joinMatch[1] : null;
+                        messageColor = 0x2ECC71; // Green for joins
+                        messageIcon = '📥';
+                        messageCategory = 'Player Joined';
+                    } else if (message.includes('left the game')) {
+                        const leaveMatch = message.match(/^(\w+) left the game/);
+                        detectedPlayer = leaveMatch ? leaveMatch[1] : null;
+                        messageColor = 0xE67E22; // Orange for leaves
+                        messageIcon = '📤';
+                        messageCategory = 'Player Left';
+                    } else if (message.includes('vote') || message.includes('Vote')) {
+                        messageColor = 0x3498DB; // Blue for voting
+                        messageIcon = '🗳️';
+                        messageCategory = 'Vote Reminder';
+                    } else if (message.includes('PLAYERWARPS') || message.includes('warp')) {
+                        messageColor = 0x9B59B6; // Purple for warps
+                        messageIcon = '🌀';
+                        messageCategory = 'Player Warp';
+                    } else if (message.includes('death') || message.includes('killed') || message.includes('died')) {
+                        // Try to extract player name from death messages
+                        const deathMatch = message.match(/^(\w+) (was|died|killed)/);
+                        detectedPlayer = deathMatch ? deathMatch[1] : null;
+                        messageColor = 0xE74C3C; // Red for death
+                        messageIcon = '💀';
+                        messageCategory = 'Death Event';
+                    } else if (message.includes('achievement') || message.includes('advancement')) {
+                        // Try to extract player name from advancement messages
+                        const achievementMatch = message.match(/^(\w+) has (made the advancement|completed the challenge|reached the goal)/);
+                        detectedPlayer = achievementMatch ? achievementMatch[1] : null;
+                        messageColor = 0xF1C40F; // Yellow for achievements
+                        messageIcon = '🏆';
+                        messageCategory = 'Achievement';
+                    }
+                    
+                    // If we detected a player, use their head as the icon
+                    if (detectedPlayer) {
+                        authorName = detectedPlayer;
+                        authorIcon = `https://mc-heads.net/avatar/${detectedPlayer}/32`;
+                    }
+
+                    const embed = new EmbedBuilder()
+                        .setColor(messageColor)
+                        .setAuthor({
+                            name: authorName,
+                            iconURL: authorIcon
+                        })
+                        .setDescription(`**${message}**`)
+                        .setTimestamp()
+                        .setFooter({ 
+                            text: `${messageCategory} • ${config.minecraft.host}`, 
+                            iconURL: 'https://mc-heads.net/avatar/MHF_Exclamation/16'
+                        });
 
                     await this.channels.logs.send({ embeds: [embed] });
                 }
@@ -469,61 +549,81 @@ class DiscordClient {
         const isOnline = bot?.isConnected;
         const playerCount = bot?.players?.size || 0;
         
-        // Determine status based on title/description for backwards compatibility
-        let statusText = description;
-        let embedColor = color;
-        
-        // Use detected username if available, fallback to config
-        const displayUsername = bot?.detectedUsername || config.minecraft.username || 'Unknown';
+        // Use detected username if available, fallback to config, never hardcode
+        const displayUsername = bot?.detectedUsername || bot?.bot?.username || config.minecraft.username || 'Unknown';
         
         // Get closest player info
         const closestPlayerInfo = bot?.getClosestPlayerInfo?.() || null;
         
-        // Map common status messages to cleaner descriptions
+        // Determine status and color based on connection state with enhanced descriptions
+        let statusText = description;
+        let embedColor = color;
+        let statusIcon = '🔴';
+        
         if (title.includes('Connected') || description.includes('connected') || description.includes('online')) {
-            statusText = `Connected to **${config.minecraft.host}** as **${displayUsername}**`;
-            embedColor = 0x2ECC71; // Green
+            statusText = `🟢 **ONLINE & ACTIVE** • Successfully connected to \`${config.minecraft.host}\`\n✨ Bot is monitoring chat and ready for commands`;
+            embedColor = 0x00FF41; // Bright green
+            statusIcon = '🟢';
         } else if (title.includes('Disconnected') || description.includes('disconnected') || description.includes('offline')) {
-            statusText = `Disconnected from **${config.minecraft.host}**`;
-            embedColor = 0xE74C3C; // Red
+            statusText = `🔴 **OFFLINE** • Lost connection to \`${config.minecraft.host}\`\n🔄 Auto-reconnect will attempt to restore connection`;
+            embedColor = 0xFF4757; // Red
+            statusIcon = '🔴';
         } else if (title.includes('Starting') || description.includes('initializing') || description.includes('starting')) {
-            statusText = `Connecting to **${config.minecraft.host}** as **${displayUsername}**`;
-            embedColor = 0xF39C12; // Orange
+            statusText = `🟡 **INITIALIZING** • Establishing secure connection to \`${config.minecraft.host}\`\n⏳ Please wait while the bot connects...`;
+            embedColor = 0xFFA502; // Orange
+            statusIcon = '🟡';
         } else if (title.includes('Authentication') || description.includes('authenticate')) {
-            statusText = `Waiting for authentication to **${config.minecraft.host}**`;
+            statusText = `🟣 **AUTH REQUIRED** • Microsoft authentication needed\n🔐 Please complete authentication to continue`;
             embedColor = 0x9B59B6; // Purple
+            statusIcon = '🟣';
         } else if (title.includes('Error') || title.includes('Failed') || description.includes('error') || description.includes('failed')) {
-            statusText = `Connection error with **${config.minecraft.host}**`;
-            embedColor = 0xE74C3C; // Red
+            statusText = `🔴 **CONNECTION FAILED** • Unable to reach \`${config.minecraft.host}\`\n❌ ${description}`;
+            embedColor = 0xFF3838; // Bright red
+            statusIcon = '🔴';
+        } else if (title.includes('Kicked')) {
+            statusText = `⚠️ **KICKED FROM SERVER** • \`${config.minecraft.host}\`\n🚫 ${description}`;
+            embedColor = 0xFF8C00; // Orange-red
+            statusIcon = '⚠️';
+        } else if (title.includes('Walk') || title.includes('walking')) {
+            statusText = `🚶 **MOVEMENT ACTIVE** • Bot is executing movement command\n📍 ${description}`;
+            embedColor = 0x3498DB; // Blue
+            statusIcon = '🚶';
+        } else if (title.includes('Respawn') || title.includes('Died')) {
+            statusText = `💀 **RESPAWNED** • Bot died and has been automatically respawned\n🏥 Health restored, continuing operations`;
+            embedColor = 0xFF6B6B; // Light red
+            statusIcon = '💀';
         }
 
         const embed = new EmbedBuilder()
             .setColor(embedColor)
-            .setTitle('Bot Status')
+            .setTitle(`${statusIcon} Minecraft Bot Status`)
             .setDescription(statusText)
             .addFields(
                 { 
-                    name: 'Server Info', 
-                    value: `**Host:** ${config.minecraft.host}\n**Port:** ${config.minecraft.port}\n**Version:** ${config.minecraft.version}`, 
+                    name: '🎯 Bot Information', 
+                    value: `**Username:** \`${displayUsername}\`\n**Version:** \`${config.minecraft.version}\`\n**Auth:** Microsoft Account`, 
                     inline: true 
                 },
                 { 
-                    name: 'Connection', 
-                    value: `**Status:** ${isOnline ? 'Online' : 'Offline'}\n**Players:** ${playerCount}\n**Attempts:** ${bot?.reconnectAttempts || 0}/${config.minecraft.maxReconnectAttempts}`, 
+                    name: '🌐 Server Details', 
+                    value: `**Host:** \`${config.minecraft.host}\`\n**Port:** \`${config.minecraft.port}\`\n**Status:** ${isOnline ? '🟢 Online' : '🔴 Offline'}`, 
                     inline: true 
                 },
                 { 
-                    name: 'Nearest Player', 
-                    value: closestPlayerInfo ? `**${closestPlayerInfo.name}**\n${closestPlayerInfo.distance} blocks away` : 'None detected', 
+                    name: '👥 Players & Proximity', 
+                    value: `**Online:** ${playerCount} player${playerCount !== 1 ? 's' : ''}\n**Closest:** ${closestPlayerInfo ? `${closestPlayerInfo.name} (${closestPlayerInfo.distance}m)` : 'None nearby'}`, 
                     inline: true 
                 },
                 { 
-                    name: 'Features', 
-                    value: `**Anti-AFK:** ${config.minecraft.enableAntiAfk ? 'Enabled' : 'Disabled'}\n**Auth:** Microsoft\n**Auto-Reconnect:** Enabled`, 
-                    inline: true 
+                    name: '🔧 System Status', 
+                    value: `**Anti-AFK:** ${config.minecraft.enableAntiAfk ? '✅ Active' : '❌ Disabled'}\n**Reconnect:** ${bot?.reconnectAttempts || 0}/${config.minecraft.maxReconnectAttempts} attempts\n**Auto-Reconnect:** ✅ Enabled`, 
+                    inline: false 
                 }
             )
-            .setFooter({ text: `Bot Username: ${displayUsername} | React with ✅ to connect, ❌ to disconnect` })
+            .setFooter({ 
+                text: `${displayUsername} • React ✅ to connect • React ❌ to disconnect`, 
+                iconURL: 'https://mc-heads.net/avatar/' + displayUsername + '/16'
+            })
             .setTimestamp();
 
         if (!this.isConnected) {
@@ -624,15 +724,30 @@ class DiscordClient {
     async sendLoginEmbed(authCode, authUrl) {
         const embed = new EmbedBuilder()
             .setColor(0xFF9900)
-            .setTitle('🔑 Microsoft Authentication Required')
-            .setDescription('Please authenticate your Minecraft account to continue')
+            .setTitle('🔐 Microsoft Authentication Required')
+            .setDescription(`**${config.minecraft.username}** needs to authenticate with Microsoft to access **${config.minecraft.host}**`)
             .addFields(
-                { name: '🌐 Authentication URL', value: authUrl, inline: false },
-                { name: '🔢 Authentication Code', value: `\`\`\`${authCode}\`\`\``, inline: false },
-                { name: '📝 Instructions', value: '1. Click the link above\n2. Enter the code shown\n3. Sign in with your Microsoft account', inline: false }
+                { 
+                    name: '🌐 Click Here to Authenticate', 
+                    value: `**[Microsoft Login Page](${authUrl})**\n\`${authUrl}\``, 
+                    inline: false 
+                },
+                { 
+                    name: '🔢 Enter This Code', 
+                    value: `\`\`\`fix\n${authCode}\`\`\``, 
+                    inline: false 
+                },
+                { 
+                    name: '📋 Step-by-Step Instructions', 
+                    value: '🔸 **Step 1:** Click the authentication link above\n🔸 **Step 2:** Enter the code: `' + authCode + '`\n🔸 **Step 3:** Sign in with your Microsoft account\n🔸 **Step 4:** Bot will automatically connect once authenticated\n\n⏱️ *This authentication will be cached for future connections*', 
+                    inline: false 
+                }
             )
             .setTimestamp()
-            .setFooter({ text: 'One-time authentication' });
+            .setFooter({ 
+                text: `Authentication for ${config.minecraft.username} • One-time setup`, 
+                iconURL: 'https://mc-heads.net/avatar/' + config.minecraft.username + '/16'
+            });
 
         if (!this.isConnected) {
             this.messageQueue.push({embed, channelType: 'login'});
@@ -641,8 +756,16 @@ class DiscordClient {
 
         if (this.channels.login) {
             try {
-                await this.channels.login.send({ embeds: [embed] });
-                logger.info('✅ Authentication embed sent to Discord login channel');
+                // Add ping if user ID is configured with more context
+                const messageContent = config.discord.pingUserId ? 
+                    `🚨 <@${config.discord.pingUserId}> **AUTHENTICATION REQUIRED** - The Minecraft bot needs your login!` : 
+                    '🔔 **Authentication Required** - Please complete Microsoft login to connect the bot';
+                    
+                await this.channels.login.send({ 
+                    content: messageContent,
+                    embeds: [embed] 
+                });
+                logger.info('✅ Enhanced authentication embed sent to Discord login channel');
             } catch (error) {
                 logger.error('❌ Failed to send embed to login channel:', error);
             }
