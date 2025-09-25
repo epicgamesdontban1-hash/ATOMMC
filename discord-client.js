@@ -22,6 +22,8 @@ class DiscordClient {
         this.statusMessageId = null; // Persistent status message for reactions
         this.playerListMessageId = null; // Persistent player list message
         this.reactionDebounce = new Map(); // Prevent reaction spam
+        this.statusUpdateInProgress = false; // Prevent multiple simultaneous status updates
+        this.playerListUpdateInProgress = false; // Prevent multiple simultaneous player list updates
     }
 
     async connect() {
@@ -51,7 +53,7 @@ class DiscordClient {
                 ]
             });
 
-            this.client.once('ready', async () => {
+            this.client.once('clientReady', async () => {
                 logger.info(`Discord bot logged in as ${this.client.user.tag}`);
                 await this.setupSlashCommands();
                 try {
@@ -383,7 +385,7 @@ class DiscordClient {
                             name: playerRank ? `${playerName} [${playerRank}]` : playerName,
                             iconURL: `https://mc-heads.net/avatar/${playerName}/32`
                         })
-                        .setDescription(`💬 **${cleanMessage}**`)
+                        .setDescription(`💬 ${cleanMessage}`)
                         .setTimestamp()
                         .setFooter({ 
                             text: `🎮 ${config.minecraft.host} • Player Chat`, 
@@ -451,7 +453,7 @@ class DiscordClient {
                             name: authorName,
                             iconURL: authorIcon
                         })
-                        .setDescription(`**${message}**`)
+                        .setDescription(`${message}`)
                         .setTimestamp()
                         .setFooter({ 
                             text: `${messageCategory} • ${config.minecraft.host}`, 
@@ -471,18 +473,28 @@ class DiscordClient {
         if (!this.isConnected || !this.channels.logs) return;
 
         try {
-            // Create single embed with multiple messages
+            // Limit description length to avoid Discord limits
+            let description = messages.join('\n');
+            if (description.length > 1900) {
+                description = description.substring(0, 1900) + '... (truncated)';
+            }
+
+            // Create single embed with multiple server messages
             const embed = new EmbedBuilder()
-                .setColor(0x00FF00)
+                .setColor(0x57F287) // Green for server messages
                 .setAuthor({
-                    name: 'Server',
-                    iconURL: 'https://imgs.search.brave.com/aUkZZuWoExfFjdH1fwS8tmTkcegNAcx9v32Cs3n3rmc/rs:fit:860:0:0:0/g:ce/aHR0cHM6Ly9pLnBp/bmltZy5jb20vb3Jp/Z2luYWxzLzVhL2Vk/L2ZmLzVhZWRmZjAz/NmNmMGI3MDQ5NTE2/ZTZhYzM1ODRmYWI2/LmpwZw'
+                    name: 'Server System',
+                    iconURL: 'https://mc-heads.net/avatar/MHF_Question/32'
                 })
-                .setDescription(messages.join('\n'))
+                .setDescription(`${description}`)
                 .setTimestamp()
-                .setFooter({ text: 'Minecraft Chat' });
+                .setFooter({ 
+                    text: `${messages.length} messages • ${config.minecraft.host}`, 
+                    iconURL: 'https://mc-heads.net/avatar/MHF_Exclamation/16'
+                });
 
             await this.channels.logs.send({ embeds: [embed] });
+            logger.debug(`Successfully sent ${messages.length} batched server messages`);
         } catch (error) {
             logger.error('Failed to send batched messages:', error.message || error);
         }
@@ -495,7 +507,7 @@ class DiscordClient {
         }
 
         const now = Date.now();
-        const batchKey = Math.floor(now / 1000); // Group by second
+        const batchKey = Math.floor(now / 2000); // Group by 2-second windows
 
         if (!this.pendingMessages.has(batchKey)) {
             this.pendingMessages.set(batchKey, []);
@@ -508,93 +520,96 @@ class DiscordClient {
             clearTimeout(this.batchTimeout);
         }
 
-        // Set new timeout to send batched messages
+        // Set new timeout to send batched messages (shorter timeout for responsiveness)
         this.batchTimeout = setTimeout(() => {
             this.flushBatchedMessages();
-        }, 1000);
+        }, 1500); // 1.5 second delay
 
+        logger.debug(`Batched server message: "${message}" (${this.pendingMessages.get(batchKey).length} messages in batch)`);
         return true; // Message was batched
     }
 
     async flushBatchedMessages() {
-        for (const [timestamp, messages] of this.pendingMessages.entries()) {
-            if (messages.length === 1) {
-                // Single message - send as regular embed
-                const embed = new EmbedBuilder()
-                    .setColor(0x00FF00)
-                    .setAuthor({
-                        name: 'Server',
-                        iconURL: 'https://i.imgur.com/5ZzpCmx.png'
-                    })
-                    .setDescription(messages[0])
-                    .setTimestamp()
-                    .setFooter({ text: 'Minecraft Chat' });
-
-                if (this.channels.logs) {
-                    await this.channels.logs.send({ embeds: [embed] });
+        try {
+            for (const [timestamp, messages] of this.pendingMessages.entries()) {
+                if (messages.length === 1) {
+                    // Single message - send as regular server message
+                    await this.sendChatMessage('Server', messages[0], true);
+                } else if (messages.length > 1) {
+                    // Multiple messages - combine into one embed
+                    logger.info(`Sending ${messages.length} batched server messages`);
+                    await this.sendBatchedMessages(messages);
                 }
-            } else if (messages.length > 1) {
-                // Multiple messages - batch them
-                await this.sendBatchedMessages(messages);
             }
+        } catch (error) {
+            logger.error('Failed to flush batched messages:', error);
+        } finally {
+            this.pendingMessages.clear();
+            this.batchTimeout = null;
         }
-
-        this.pendingMessages.clear();
-        this.batchTimeout = null;
     }
 
     async sendStatusEmbed(title, description, color = 0x00FF00) {
-        // Create rich status embed using the same format as /status command
-        const bot = this.minecraftBot;
-        const isOnline = bot?.isConnected;
-        const playerCount = bot?.players?.size || 0;
-        
-        // Use detected username if available, fallback to config, never hardcode
-        const displayUsername = bot?.detectedUsername || bot?.bot?.username || config.minecraft.username || 'Unknown';
-        
-        // Get closest player info
-        const closestPlayerInfo = bot?.getClosestPlayerInfo?.() || null;
-        
-        // Determine status and color based on connection state with enhanced descriptions
-        let statusText = description;
-        let embedColor = color;
-        let statusIcon = '🔴';
-        
-        if (title.includes('Connected') || description.includes('connected') || description.includes('online')) {
-            statusText = `🟢 **ONLINE & ACTIVE** • Successfully connected to \`${config.minecraft.host}\`\n✨ Bot is monitoring chat and ready for commands`;
-            embedColor = 0x00FF41; // Bright green
-            statusIcon = '🟢';
-        } else if (title.includes('Disconnected') || description.includes('disconnected') || description.includes('offline')) {
-            statusText = `🔴 **OFFLINE** • Lost connection to \`${config.minecraft.host}\`\n🔄 Auto-reconnect will attempt to restore connection`;
-            embedColor = 0xFF4757; // Red
-            statusIcon = '🔴';
-        } else if (title.includes('Starting') || description.includes('initializing') || description.includes('starting')) {
-            statusText = `🟡 **INITIALIZING** • Establishing secure connection to \`${config.minecraft.host}\`\n⏳ Please wait while the bot connects...`;
-            embedColor = 0xFFA502; // Orange
-            statusIcon = '🟡';
-        } else if (title.includes('Authentication') || description.includes('authenticate')) {
-            statusText = `🟣 **AUTH REQUIRED** • Microsoft authentication needed\n🔐 Please complete authentication to continue`;
-            embedColor = 0x9B59B6; // Purple
-            statusIcon = '🟣';
-        } else if (title.includes('Error') || title.includes('Failed') || description.includes('error') || description.includes('failed')) {
-            statusText = `🔴 **CONNECTION FAILED** • Unable to reach \`${config.minecraft.host}\`\n❌ ${description}`;
-            embedColor = 0xFF3838; // Bright red
-            statusIcon = '🔴';
-        } else if (title.includes('Kicked')) {
-            statusText = `⚠️ **KICKED FROM SERVER** • \`${config.minecraft.host}\`\n🚫 ${description}`;
-            embedColor = 0xFF8C00; // Orange-red
-            statusIcon = '⚠️';
-        } else if (title.includes('Walk') || title.includes('walking')) {
-            statusText = `🚶 **MOVEMENT ACTIVE** • Bot is executing movement command\n📍 ${description}`;
-            embedColor = 0x3498DB; // Blue
-            statusIcon = '🚶';
-        } else if (title.includes('Respawn') || title.includes('Died')) {
-            statusText = `💀 **RESPAWNED** • Bot died and has been automatically respawned\n🏥 Health restored, continuing operations`;
-            embedColor = 0xFF6B6B; // Light red
-            statusIcon = '💀';
+        // Prevent multiple simultaneous status updates
+        if (this.statusUpdateInProgress) {
+            logger.debug('Status update already in progress, skipping duplicate');
+            return;
         }
+        
+        this.statusUpdateInProgress = true;
+        
+        try {
+            // Create rich status embed using the same format as /status command
+            const bot = this.minecraftBot;
+            const isOnline = bot?.isConnected;
+            const playerCount = bot?.players?.size || 0;
+            
+            // Use detected username if available, fallback to config username, never hardcode
+            const displayUsername = bot?.detectedUsername || bot?.bot?.username || config.minecraft.username || 'Unknown';
+            
+            // Get closest player info
+            const closestPlayerInfo = bot?.getClosestPlayerInfo?.() || null;
+            
+            // Determine status and color based on connection state with enhanced descriptions
+            let statusText = description;
+            let embedColor = color;
+            let statusIcon = '🔴';
+            
+            if (title.includes('Connected') || description.includes('connected') || description.includes('online')) {
+                statusText = `🟢 **ONLINE & ACTIVE** • Successfully connected to \`${config.minecraft.host}\`\n✨ Bot is monitoring chat and ready for commands`;
+                embedColor = 0x00FF41; // Bright green
+                statusIcon = '🟢';
+            } else if (title.includes('Disconnected') || description.includes('disconnected') || description.includes('offline')) {
+                statusText = `🔴 **OFFLINE** • Lost connection to \`${config.minecraft.host}\`\n🔄 Auto-reconnect will attempt to restore connection`;
+                embedColor = 0xFF4757; // Red
+                statusIcon = '🔴';
+            } else if (title.includes('Starting') || description.includes('initializing') || description.includes('starting')) {
+                statusText = `🟡 **INITIALIZING** • Establishing secure connection to \`${config.minecraft.host}\`\n⏳ Please wait while the bot connects...`;
+                embedColor = 0xFFA502; // Orange
+                statusIcon = '🟡';
+            } else if (title.includes('Authentication') || description.includes('authenticate')) {
+                statusText = `🟣 **AUTH REQUIRED** • Microsoft authentication needed\n🔐 Please complete authentication to continue`;
+                embedColor = 0x9B59B6; // Purple
+                statusIcon = '🟣';
+            } else if (title.includes('Error') || title.includes('Failed') || description.includes('error') || description.includes('failed')) {
+                statusText = `🔴 **CONNECTION FAILED** • Unable to reach \`${config.minecraft.host}\`\n❌ ${description}`;
+                embedColor = 0xFF3838; // Bright red
+                statusIcon = '🔴';
+            } else if (title.includes('Kicked')) {
+                statusText = `⚠️ **KICKED FROM SERVER** • \`${config.minecraft.host}\`\n🚫 ${description}`;
+                embedColor = 0xFF8C00; // Orange-red
+                statusIcon = '⚠️';
+            } else if (title.includes('Walk') || title.includes('walking')) {
+                statusText = `🚶 **MOVEMENT ACTIVE** • Bot is executing movement command\n📍 ${description}`;
+                embedColor = 0x3498DB; // Blue
+                statusIcon = '🚶';
+            } else if (title.includes('Respawn') || title.includes('Died')) {
+                statusText = `💀 **RESPAWNED** • Bot died and has been automatically respawned\n🏥 Health restored, continuing operations`;
+                embedColor = 0xFF6B6B; // Light red
+                statusIcon = '💀';
+            }
 
-        const embed = new EmbedBuilder()
+            const embed = new EmbedBuilder()
             .setColor(embedColor)
             .setTitle(`${statusIcon} Minecraft Bot Status`)
             .setDescription(statusText)
@@ -622,41 +637,46 @@ class DiscordClient {
             )
             .setFooter({ 
                 text: `${displayUsername} • React ✅ to connect • React ❌ to disconnect`, 
-                iconURL: 'https://mc-heads.net/avatar/' + displayUsername + '/16'
+                iconURL: `https://mc-heads.net/avatar/${displayUsername}/16`
             })
             .setTimestamp();
 
-        if (!this.isConnected) {
-            this.messageQueue.push({embed, channelType: 'status', isStatusUpdate: true});
-            return;
-        }
+            if (!this.isConnected) {
+                this.messageQueue.push({embed, channelType: 'status', isStatusUpdate: true});
+                return;
+            }
 
-        try {
             if (this.channels.status) {
-                let message;
+                // Use environment variable for status message ID if available, otherwise use stored ID
+                const targetStatusMessageId = process.env.DISCORD_STATUS_MESSAGE_ID || this.statusMessageId;
                 
-                if (this.statusMessageId) {
+                if (targetStatusMessageId) {
                     // Try to edit existing persistent status message
                     try {
-                        message = await this.channels.status.messages.fetch(this.statusMessageId);
+                        const message = await this.channels.status.messages.fetch(targetStatusMessageId);
                         await message.edit({ embeds: [embed] });
                         logger.debug('Updated existing status message');
+                        // Store the environment message ID if we successfully used it
+                        if (process.env.DISCORD_STATUS_MESSAGE_ID) {
+                            this.statusMessageId = process.env.DISCORD_STATUS_MESSAGE_ID;
+                        }
+                        return;
                     } catch (fetchError) {
-                        logger.warn('Failed to fetch existing status message, creating new one');
-                        message = await this.channels.status.send({ embeds: [embed] });
-                        this.statusMessageId = message.id;
-                        await this.addStatusReactions(message);
+                        logger.warn(`Failed to fetch existing status message (ID: ${targetStatusMessageId}), creating new one: ${fetchError.message}`);
+                        // Don't reset statusMessageId to null here - just create a new one
                     }
-                } else {
-                    // Create new persistent status message
-                    message = await this.channels.status.send({ embeds: [embed] });
-                    this.statusMessageId = message.id;
-                    logger.info(`Created persistent status message with ID: ${this.statusMessageId}`);
-                    await this.addStatusReactions(message);
                 }
+                
+                // Create new persistent status message
+                const message = await this.channels.status.send({ embeds: [embed] });
+                this.statusMessageId = message.id;
+                logger.info(`Created persistent status message with ID: ${this.statusMessageId}`);
+                await this.addStatusReactions(message);
             }
         } catch (error) {
             logger.error('Failed to send status embed:', error.message || error);
+        } finally {
+            this.statusUpdateInProgress = false;
         }
     }
 
@@ -671,23 +691,31 @@ class DiscordClient {
     }
 
     async sendPlayerListEmbed(players) {
-        const embed = new EmbedBuilder()
-            .setColor(0x00FF00)
-            .setTitle('🎮 Online Players')
-            .setDescription(players.length > 0 ? players.map(player => `👤 ${player}`).join('\n') : '🚫 No players online')
-            .addFields(
-                { name: '📊 Total Players', value: `${players.length}`, inline: true },
-                { name: '🕒 Last Updated', value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: true }
-            )
-            .setTimestamp()
-            .setFooter({ text: 'Player List • Updates automatically' });
-
-        if (!this.isConnected) {
-            this.messageQueue.push({embed, channelType: 'playerList'});
+        // Prevent multiple simultaneous player list updates
+        if (this.playerListUpdateInProgress) {
+            logger.debug('Player list update already in progress, skipping duplicate');
             return;
         }
-
+        
+        this.playerListUpdateInProgress = true;
+        
         try {
+            const embed = new EmbedBuilder()
+                .setColor(0x00FF00)
+                .setTitle('🎮 Online Players')
+                .setDescription(players.length > 0 ? players.map(player => `👤 ${player}`).join('\n') : '🚫 No players online')
+                .addFields(
+                    { name: '📊 Total Players', value: `${players.length}`, inline: true },
+                    { name: '🕒 Last Updated', value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: true }
+                )
+                .setTimestamp()
+                .setFooter({ text: 'Player List • Updates automatically' });
+
+            if (!this.isConnected) {
+                this.messageQueue.push({embed, channelType: 'playerList'});
+                return;
+            }
+
             if (this.channels.playerList) {
                 // Use hardcoded player list message ID from secrets if available, otherwise use stored ID
                 const targetPlayerListMessageId = process.env.DISCORD_PLAYER_LIST_MESSAGE_ID || this.playerListMessageId;
@@ -704,8 +732,8 @@ class DiscordClient {
                         }
                         return;
                     } catch (fetchError) {
-                        logger.warn('Failed to fetch existing player list message, creating new one');
-                        this.playerListMessageId = null;
+                        logger.warn(`Failed to fetch existing player list message (ID: ${targetPlayerListMessageId}), creating new one: ${fetchError.message}`);
+                        // Don't reset playerListMessageId to null here - just create a new one
                     }
                 }
                 
@@ -716,8 +744,8 @@ class DiscordClient {
             }
         } catch (error) {
             logger.error('Failed to send player list embed:', error.message || error);
-            // Reset message ID on failure so we try to create a new one next time
-            this.playerListMessageId = null;
+        } finally {
+            this.playerListUpdateInProgress = false;
         }
     }
 
@@ -855,7 +883,7 @@ class DiscordClient {
 
         // Check bot connection for commands that require it
         const requiresConnection = ['message', 'walk', 'location', 'health', 'jump', 'look', 'stop'];
-        if (requiresConnection.includes(commandName) && (!this.minecraftBot || !this.minecraftBot.isConnected)) {
+        if (requiresConnection.includes(commandName) && (!this.minecraftBot || !this.minecraftBot.isConnected || !this.minecraftBot.bot)) {
             return await interaction.reply({ 
                 content: '❌ Bot is not connected to Minecraft server', 
                 ephemeral: true 
@@ -904,7 +932,7 @@ class DiscordClient {
                     const isOnline = bot?.isConnected;
                     const playerCount = bot?.players?.size || 0;
                     const closestPlayerInfo = bot?.getClosestPlayerInfo?.() || null;
-                    const displayUsername = bot?.detectedUsername || config.minecraft.username || 'Unknown';
+                    const displayUsername = bot?.detectedUsername || bot?.bot?.username || config.minecraft.username || 'Unknown';
                     
                     const embed = new EmbedBuilder()
                         .setColor(isOnline ? 0x2ECC71 : 0xE74C3C)

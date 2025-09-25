@@ -249,7 +249,9 @@ class MinecraftBot {
 
         // Login sequence
         this.bot.on('login', () => {
-            logger.info(`Logged in as ${this.bot.username}`);
+            // Set the detected username immediately after login
+            this.detectedUsername = this.bot.username;
+            logger.info(`Logged in as ${this.detectedUsername}`);
         });
 
         // Player join/leave events
@@ -263,18 +265,25 @@ class MinecraftBot {
                     const wasAlreadyOnline = this.players.has(username);
                     this.players.add(username);
                     
-                    // Only send join message if this is a NEW player AND we've been connected for more than 5 seconds
-                    // This prevents flood of join messages when bot first connects
-                    const hasBeenConnectedLongEnough = this.isConnected && (Date.now() - this.connectionStartTime) > 5000;
+                    // Only send join message if this is a NEW player AND we've been connected for more than 30 seconds
+                    // Extended delay to ensure all initial player sync is complete before sending join messages
+                    const hasBeenConnectedLongEnough = this.isConnected && this.connectionStartTime && (Date.now() - this.connectionStartTime) > 30000;
                     
-                    if (!wasAlreadyOnline && hasBeenConnectedLongEnough) {
-                        logger.info(`Player joined: ${username} (Total: ${this.players.size})`);
+                    // Additional check: Only send if we're not in the initial connection phase
+                    const isNotInitialConnection = this.connectionState === 'connected' && hasBeenConnectedLongEnough;
+                    
+                    if (!wasAlreadyOnline && isNotInitialConnection) {
+                        logger.info(`New player joined: ${username} (Total: ${this.players.size})`);
                         
                         // Send join message to Discord as server message (only for actual new joins)
                         const joinMessage = `${username} joined the game`;
                         this.discordClient.sendChatMessage('Server', joinMessage, true);
                     } else {
-                        logger.debug(`Player ${username} ${wasAlreadyOnline ? 'already in list' : 'detected during initial sync'}, skipping join message`);
+                        if (wasAlreadyOnline) {
+                            logger.debug(`Player ${username} already tracked, ignoring duplicate join event`);
+                        } else {
+                            logger.debug(`Player ${username} detected during initial sync/connection phase, skipping join message (connection age: ${this.connectionStartTime ? Date.now() - this.connectionStartTime : 0}ms)`);
+                        }
                     }
                     
                     // Update player list immediately
@@ -291,15 +300,23 @@ class MinecraftBot {
                 const username = player.username.trim();
                 const wasRemoved = this.players.delete(username);
                 
-                // Only send leave message if player was actually in our list
-                if (wasRemoved) {
+                // Only send leave message if player was actually in our list AND we're fully connected
+                // Additional check to prevent false leave messages during initial connection
+                const hasBeenConnectedLongEnough = this.isConnected && this.connectionStartTime && (Date.now() - this.connectionStartTime) > 30000;
+                const isNotInitialConnection = this.connectionState === 'connected' && hasBeenConnectedLongEnough;
+                
+                if (wasRemoved && isNotInitialConnection) {
                     logger.info(`Player left: ${username} (Total: ${this.players.size})`);
                     
                     // Send leave message to Discord as server message
                     const leaveMessage = `${username} left the game`;
                     this.discordClient.sendChatMessage('Server', leaveMessage, true);
                 } else {
-                    logger.debug(`Player ${username} was not in list, skipping leave message`);
+                    if (!wasRemoved) {
+                        logger.debug(`Player ${username} was not in list, skipping leave message`);
+                    } else {
+                        logger.debug(`Player ${username} left during initial connection phase, skipping leave message (connection age: ${this.connectionStartTime ? Date.now() - this.connectionStartTime : 0}ms)`);
+                    }
                 }
                 
                 // Update player list immediately
@@ -337,18 +354,22 @@ class MinecraftBot {
 
         // Send messages to Discord
         if (sender) {
-            // Player message - send with player info
+            // Player message - send immediately (no batching for player messages)
             this.discordClient.sendChatMessage(sender, message, false);
         } else {
-            // Server message - filter out join/leave messages to prevent duplicates
-            // (these are already handled by playerJoined/playerLeft events)
+            // Server message - filter out ALL join/leave messages to prevent duplicates
+            // (these are handled by playerJoined/playerLeft events which are more reliable)
             if (message.includes(' joined the game') || message.includes(' left the game')) {
-                logger.debug(`Skipping duplicate join/leave message: ${message}`);
-                return; // Don't send these, they're handled by events
+                logger.debug(`Filtering out join/leave chat message: ${message}`);
+                return; // Don't send these, they're handled by proper events
             }
             
-            // Send other server messages to Discord
-            this.discordClient.sendChatMessage('Server', message, true);
+            // Try to batch server messages that arrive at the same time
+            const wasBatched = this.discordClient.batchMessage(message, true);
+            if (!wasBatched) {
+                // If batching failed or isn't appropriate, send immediately
+                this.discordClient.sendChatMessage('Server', message, true);
+            }
         }
     }
 
@@ -585,6 +606,7 @@ class MinecraftBot {
                     // Don't add the bot itself to the player list
                     if (username !== this.bot.username) {
                         this.players.add(username);
+                        logger.debug(`Initial sync: Added existing player ${username}`);
                     }
                 }
             });

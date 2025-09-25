@@ -8,6 +8,13 @@ A Node.js application that creates a bridge between Minecraft servers and Discor
 
 Preferred communication style: Simple, everyday language.
 
+## Recent Issues Fixed
+
+### December 25, 2025
+- Fixed false player join/leave messages appearing when bot first connects to server
+- Fixed status message not displaying the bot's actual username correctly
+- Configured project to run properly in Replit environment with web dashboard on port 5000
+
 ## System Architecture
 
 ### Core Components
