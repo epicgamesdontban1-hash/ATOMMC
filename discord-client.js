@@ -750,10 +750,14 @@ class DiscordClient {
     }
 
     async sendLoginEmbed(authCode, authUrl) {
+        // Use detected username if available, fallback to config username
+        const bot = this.minecraftBot;
+        const displayUsername = bot?.detectedUsername || bot?.bot?.username || config.minecraft.username || 'Unknown';
+        
         const embed = new EmbedBuilder()
             .setColor(0xFF9900)
             .setTitle('🔐 Microsoft Authentication Required')
-            .setDescription(`**${config.minecraft.username}** needs to authenticate with Microsoft to access **${config.minecraft.host}**`)
+            .setDescription(`**${displayUsername}** needs to authenticate with Microsoft to access **${config.minecraft.host}**`)
             .addFields(
                 { 
                     name: '🌐 Click Here to Authenticate', 
@@ -773,8 +777,8 @@ class DiscordClient {
             )
             .setTimestamp()
             .setFooter({ 
-                text: `Authentication for ${config.minecraft.username} • One-time setup`, 
-                iconURL: 'https://mc-heads.net/avatar/' + config.minecraft.username + '/16'
+                text: `Authentication for ${displayUsername} • One-time setup`, 
+                iconURL: 'https://mc-heads.net/avatar/' + displayUsername + '/16'
             });
 
         if (!this.isConnected) {
