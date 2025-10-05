@@ -3,10 +3,10 @@ require('dotenv').config();
 
 const config = {
     minecraft: {
-        host: process.env.MINECRAFT_HOST || 'localhost',
+        host: process.env.MINECRAFT_HOST || 'play.atommc.co.za',
         port: parseInt(process.env.MINECRAFT_PORT) || 25565,
         username: process.env.MINECRAFT_USERNAME || 'MinecraftBot',
-        version: process.env.MINECRAFT_VERSION || '1.20.4',
+        version: process.env.MINECRAFT_VERSION || '1.21.4',
         auth: process.env.MINECRAFT_AUTH || 'microsoft',
         reconnectDelay: parseInt(process.env.RECONNECT_DELAY) || 15000,
         maxReconnectAttempts: parseInt(process.env.MAX_RECONNECT_ATTEMPTS) || 100,
