@@ -23,11 +23,11 @@ class Logger {
         );
         const levelEmoji = {
             'ERROR': '❌',
-            'WARN': '⚠️ ',
-            'INFO': '📝',
+            'WARN': '⚠️',
+            'INFO': '✓',
             'DEBUG': '🔍'
         };
-        return `${levelEmoji[level.toUpperCase()] || '📝'} [${timestamp}] ${message}${formattedArgs.length > 0 ? ' ' + formattedArgs.join(' ') : ''}`;
+        return `${levelEmoji[level.toUpperCase()] || '✓'} [${timestamp}] ${message}${formattedArgs.length > 0 ? ' ' + formattedArgs.join(' ') : ''}`;
     }
 
     log(level, levelNum, message, ...args) {
