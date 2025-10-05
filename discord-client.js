@@ -24,6 +24,7 @@ class DiscordClient {
         this.reactionDebounce = new Map(); // Prevent reaction spam
         this.statusUpdateInProgress = false; // Prevent multiple simultaneous status updates
         this.playerListUpdateInProgress = false; // Prevent multiple simultaneous player list updates
+        this.authMessageId = null; // Auth message to delete after successful connection
     }
 
     async connect() {
@@ -363,6 +364,21 @@ class DiscordClient {
         }
 
         try {
+            if (!playerName || !message) {
+                logger.warn('Invalid chat message: missing playerName or message');
+                return;
+            }
+
+            if (typeof message !== 'string') {
+                logger.warn('Invalid chat message: message is not a string');
+                return;
+            }
+
+            // Truncate very long messages
+            if (message.length > 2000) {
+                message = message.substring(0, 2000);
+            }
+
             if (this.channels.logs) {
                 if (!isServerMessage) {
                     // Enhanced player message format with rank detection
@@ -392,7 +408,10 @@ class DiscordClient {
                             iconURL: 'https://mc-heads.net/avatar/MHF_Steve/16'
                         });
 
-                    await this.channels.logs.send({ embeds: [embed] });
+                    await this.channels.logs.send({ embeds: [embed] }).catch(err => {
+                        logger.error('Failed to send player message embed:', err);
+                        throw err;
+                    });
                 } else {
                     // Enhanced server message format with better categorization
                     let messageColor = 0x57F287; // Default green
@@ -460,11 +479,14 @@ class DiscordClient {
                             iconURL: 'https://mc-heads.net/avatar/MHF_Exclamation/16'
                         });
 
-                    await this.channels.logs.send({ embeds: [embed] });
+                    await this.channels.logs.send({ embeds: [embed] }).catch(err => {
+                        logger.error('Failed to send server message embed:', err);
+                        throw err;
+                    });
                 }
             }
         } catch (error) {
-            logger.error('Failed to send chat message:', error.message || error);
+            logger.error('Failed to send chat message:', error?.message || JSON.stringify(error) || 'Unknown error');
             // Don't re-throw the error to prevent crashes
         }
     }
@@ -611,32 +633,27 @@ class DiscordClient {
 
             const embed = new EmbedBuilder()
             .setColor(embedColor)
-            .setTitle(`${statusIcon} Minecraft Bot Status`)
+            .setTitle(`${statusIcon} ${displayUsername}`)
             .setDescription(statusText)
             .addFields(
                 { 
-                    name: '🎯 Bot Information', 
-                    value: `**Username:** \`${displayUsername}\`\n**Version:** \`${config.minecraft.version}\`\n**Auth:** Microsoft Account`, 
+                    name: 'Server', 
+                    value: `\`${config.minecraft.host}\``, 
                     inline: true 
                 },
                 { 
-                    name: '🌐 Server Details', 
-                    value: `**Host:** \`${config.minecraft.host}\`\n**Port:** \`${config.minecraft.port}\`\n**Status:** ${isOnline ? '🟢 Online' : '🔴 Offline'}`, 
+                    name: 'Players', 
+                    value: `${playerCount} online`, 
                     inline: true 
                 },
                 { 
-                    name: '👥 Players & Proximity', 
-                    value: `**Online:** ${playerCount} player${playerCount !== 1 ? 's' : ''}\n**Closest:** ${closestPlayerInfo ? `${closestPlayerInfo.name} (${closestPlayerInfo.distance}m)` : 'None nearby'}`, 
+                    name: 'Closest', 
+                    value: closestPlayerInfo ? `${closestPlayerInfo.name} (${closestPlayerInfo.distance}m)` : 'None', 
                     inline: true 
-                },
-                { 
-                    name: '🔧 System Status', 
-                    value: `**Anti-AFK:** ${config.minecraft.enableAntiAfk ? '✅ Active' : '❌ Disabled'}\n**Reconnect:** ${bot?.reconnectAttempts || 0}/${config.minecraft.maxReconnectAttempts} attempts\n**Auto-Reconnect:** ✅ Enabled`, 
-                    inline: false 
                 }
             )
             .setFooter({ 
-                text: `${displayUsername} • React ✅ to connect • React ❌ to disconnect`, 
+                text: `✅ connect • ❌ disconnect`, 
                 iconURL: `https://mc-heads.net/avatar/${displayUsername}/16`
             })
             .setTimestamp();
@@ -702,14 +719,9 @@ class DiscordClient {
         try {
             const embed = new EmbedBuilder()
                 .setColor(0x00FF00)
-                .setTitle('🎮 Online Players')
-                .setDescription(players.length > 0 ? players.map(player => `👤 ${player}`).join('\n') : '🚫 No players online')
-                .addFields(
-                    { name: '📊 Total Players', value: `${players.length}`, inline: true },
-                    { name: '🕒 Last Updated', value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: true }
-                )
-                .setTimestamp()
-                .setFooter({ text: 'Player List • Updates automatically' });
+                .setTitle(`👥 Players (${players.length})`)
+                .setDescription(players.length > 0 ? players.map(p => `• ${p}`).join('\n') : 'No players online')
+                .setTimestamp();
 
             if (!this.isConnected) {
                 this.messageQueue.push({embed, channelType: 'playerList'});
@@ -750,36 +762,9 @@ class DiscordClient {
     }
 
     async sendLoginEmbed(authCode, authUrl) {
-        // Use detected username if available, fallback to config username
-        const bot = this.minecraftBot;
-        const displayUsername = bot?.detectedUsername || bot?.bot?.username || config.minecraft.username || 'Unknown';
-        
         const embed = new EmbedBuilder()
             .setColor(0xFF9900)
-            .setTitle('🔐 Microsoft Authentication Required')
-            .setDescription(`**${displayUsername}** needs to authenticate with Microsoft to access **${config.minecraft.host}**`)
-            .addFields(
-                { 
-                    name: '🌐 Click Here to Authenticate', 
-                    value: `**[Microsoft Login Page](${authUrl})**\n\`${authUrl}\``, 
-                    inline: false 
-                },
-                { 
-                    name: '🔢 Enter This Code', 
-                    value: `\`\`\`fix\n${authCode}\`\`\``, 
-                    inline: false 
-                },
-                { 
-                    name: '📋 Step-by-Step Instructions', 
-                    value: '🔸 **Step 1:** Click the authentication link above\n🔸 **Step 2:** Enter the code: `' + authCode + '`\n🔸 **Step 3:** Sign in with your Microsoft account\n🔸 **Step 4:** Bot will automatically connect once authenticated\n\n⏱️ *This authentication will be cached for future connections*', 
-                    inline: false 
-                }
-            )
-            .setTimestamp()
-            .setFooter({ 
-                text: `Authentication for ${displayUsername} • One-time setup`, 
-                iconURL: 'https://mc-heads.net/avatar/' + displayUsername + '/16'
-            });
+            .setDescription(`🔐 **Auth Required**\n\n[Click to authenticate](${authUrl})\n\nCode: \`${authCode}\``);
 
         if (!this.isConnected) {
             this.messageQueue.push({embed, channelType: 'login'});
@@ -788,21 +773,31 @@ class DiscordClient {
 
         if (this.channels.login) {
             try {
-                // Add ping if user ID is configured with more context
-                const messageContent = config.discord.pingUserId ? 
-                    `🚨 <@${config.discord.pingUserId}> **AUTHENTICATION REQUIRED** - The Minecraft bot needs your login!` : 
-                    '🔔 **Authentication Required** - Please complete Microsoft login to connect the bot';
+                const messageContent = config.discord.pingUserId ? `<@${config.discord.pingUserId}>` : '';
                     
-                await this.channels.login.send({ 
+                const sentMessage = await this.channels.login.send({ 
                     content: messageContent,
                     embeds: [embed] 
                 });
-                logger.info('✅ Enhanced authentication embed sent to Discord login channel');
+                
+                this.authMessageId = sentMessage.id;
+                logger.info('Auth embed sent to Discord');
             } catch (error) {
-                logger.error('❌ Failed to send embed to login channel:', error);
+                logger.error('Failed to send auth embed:', error);
             }
-        } else {
-            logger.warn('⚠️ Login channel not available');
+        }
+    }
+
+    async deleteAuthMessage() {
+        if (this.authMessageId && this.channels.login) {
+            try {
+                const message = await this.channels.login.messages.fetch(this.authMessageId);
+                await message.delete();
+                logger.info('Auth message deleted');
+                this.authMessageId = null;
+            } catch (error) {
+                logger.debug('Failed to delete auth message:', error.message);
+            }
         }
     }
 
