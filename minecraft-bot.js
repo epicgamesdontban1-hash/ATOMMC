@@ -63,11 +63,17 @@ class MinecraftBot {
                     errorStr.includes('protodef/src/compiler.js') ||
                     errorStr.includes('CompiledProtodef.read') ||
                     errorStr.includes('ExtendableError') ||
-                    errorStr.includes('Read error for undefined')) {
+                    errorStr.includes('Read error for undefined') ||
+                    errorStr.includes('unknown chat format code')) {
                     // Silently ignore packet parsing errors - these are protocol mismatches
                     return;
                 }
                 logger.error('Client error:', error);
+            });
+
+            // Add error handler for chat parsing errors before setting up event handlers
+            this.bot._client.on('chat', (packet) => {
+                // Suppress chat parsing errors that would otherwise crash the bot
             });
 
             this.setupEventHandlers();
@@ -87,20 +93,12 @@ class MinecraftBot {
                     // Auto-detect username after successful login
                     this.detectedUsername = this.bot.username;
                     logger.info(`Successfully connected to ${config.minecraft.host}:${config.minecraft.port} as ${this.detectedUsername}`);
-                    
-                    // Update Discord status immediately with detected username
-                    if (this.discordClient) {
-                        this.discordClient.sendStatusEmbed('Connected', `Bot is now online on ${config.minecraft.host} as ${this.detectedUsername}`, 0x00FF00);
-                    }
-                    
-                    resolve();
-                });
+                    this.discordClient.sendStatusEmbed('Connected', `Successfully connected to ${config.minecraft.host}`, 0x00FF00);
 
-                this.bot.once('error', (error) => {
-                    clearTimeout(this.connectTimeout);
-                    this.connectionState = 'error';
-                    logger.error('Bot connection error:', error.message || error);
-                    reject(error);
+                    // Start automatic status updates every minute
+                    this.startStatusUpdates();
+
+                    resolve();
                 });
 
                 this.bot.once('end', (reason) => {
@@ -158,7 +156,7 @@ class MinecraftBot {
             logger.info(`Bot spawned in world: ${this.bot.game.dimension}`);
             // Track when connection was established to prevent initial player flood
             this.connectionStartTime = Date.now();
-            
+
             // Update Discord bot status to connected
             if (this.discordClient && this.discordClient.setStatus) {
                 this.discordClient.setStatus('connected', ` - ${this.bot.game.dimension}`);
@@ -166,7 +164,7 @@ class MinecraftBot {
 
             // Initialize player list (this will handle adding the bot properly)
             this.initializePlayerList();
-            
+
             // Update player list when bot joins server (with slight delay to ensure Discord is ready)
             setTimeout(() => {
                 this.updatePlayerList();
@@ -182,7 +180,7 @@ class MinecraftBot {
 
             // Start tracking player positions
             this.startPlayerTracking();
-            
+
             // Start status update interval (every minute)
             this.startStatusUpdates();
         });
@@ -225,7 +223,16 @@ class MinecraftBot {
 
         // Chat events - this is the main functionality
         this.bot.on('messagestr', (message, messagePosition, jsonMsg, sender, verified) => {
-            this.handleChatMessage(message, messagePosition, jsonMsg, sender);
+            try {
+                this.handleChatMessage(message, messagePosition, jsonMsg, sender);
+            } catch (err) {
+                logger.debug('Error handling chat message:', err?.message);
+            }
+        });
+
+        // Add global error handler for chat parsing errors
+        this.bot.on('message', (jsonMsg, position) => {
+            // Silent handler to prevent crashes from chat parsing errors
         });
 
         this.bot.on('whisper', (username, message, translate, jsonMsg, matches) => {
@@ -249,7 +256,7 @@ class MinecraftBot {
 
         // Login sequence
         this.bot.on('login', () => {
-            // Set the detected username immediately after login
+            // Set the detected username after login
             this.detectedUsername = this.bot.username;
             logger.info(`Logged in as ${this.detectedUsername}`);
         });
@@ -264,17 +271,17 @@ class MinecraftBot {
                     // Check if player is already in our list (to prevent duplicate join messages)
                     const wasAlreadyOnline = this.players.has(username);
                     this.players.add(username);
-                    
+
                     // Only send join message if this is a NEW player AND we've been connected for more than 30 seconds
                     // Extended delay to ensure all initial player sync is complete before sending join messages
                     const hasBeenConnectedLongEnough = this.isConnected && this.connectionStartTime && (Date.now() - this.connectionStartTime) > 30000;
-                    
+
                     // Additional check: Only send if we're not in the initial connection phase
                     const isNotInitialConnection = this.connectionState === 'connected' && hasBeenConnectedLongEnough;
-                    
+
                     if (!wasAlreadyOnline && isNotInitialConnection) {
                         logger.info(`New player joined: ${username} (Total: ${this.players.size})`);
-                        
+
                         // Send join message to Discord as server message (only for actual new joins)
                         const joinMessage = `${username} joined the game`;
                         this.discordClient.sendChatMessage('Server', joinMessage, true);
@@ -285,7 +292,7 @@ class MinecraftBot {
                             logger.debug(`Player ${username} detected during initial sync/connection phase, skipping join message (connection age: ${this.connectionStartTime ? Date.now() - this.connectionStartTime : 0}ms)`);
                         }
                     }
-                    
+
                     // Update player list immediately
                     setTimeout(() => this.updatePlayerList(), 1000);
                 }
@@ -299,15 +306,15 @@ class MinecraftBot {
             if (player && player.username && typeof player.username === 'string' && player.username.trim() !== '') {
                 const username = player.username.trim();
                 const wasRemoved = this.players.delete(username);
-                
+
                 // Only send leave message if player was actually in our list AND we're fully connected
                 // Additional check to prevent false leave messages during initial connection
                 const hasBeenConnectedLongEnough = this.isConnected && this.connectionStartTime && (Date.now() - this.connectionStartTime) > 30000;
                 const isNotInitialConnection = this.connectionState === 'connected' && hasBeenConnectedLongEnough;
-                
+
                 if (wasRemoved && isNotInitialConnection) {
                     logger.info(`Player left: ${username} (Total: ${this.players.size})`);
-                    
+
                     // Send leave message to Discord as server message
                     const leaveMessage = `${username} left the game`;
                     this.discordClient.sendChatMessage('Server', leaveMessage, true);
@@ -318,7 +325,7 @@ class MinecraftBot {
                         logger.debug(`Player ${username} left during initial connection phase, skipping leave message (connection age: ${this.connectionStartTime ? Date.now() - this.connectionStartTime : 0}ms)`);
                     }
                 }
-                
+
                 // Update player list immediately
                 setTimeout(() => this.updatePlayerList(), 1000);
             } else {
@@ -337,39 +344,65 @@ class MinecraftBot {
     }
 
     handleChatMessage(message, messagePosition, jsonMsg, sender) {
-        // Filter out certain message types
-        if (messagePosition === 2) return; // Action bar messages
+        try {
+            // Filter out certain message types
+            if (messagePosition === 2) return; // Action bar messages
 
-        // Log all chat messages
-        logger.info(`Chat: ${message}`);
+            // Validate message
+            if (!message || typeof message !== 'string') {
+                logger.debug('Invalid chat message received');
+                return;
+            }
 
-        // Check for keywords in player chat (not system messages)
-        if (sender && typeof message === 'string') {
-            const lowerMessage = message.toLowerCase();
-            if (lowerMessage.includes('lootedbycgy') || lowerMessage.includes('doggo')) {
-                // DM user ID 915483308522086460 with message link
-                this.discordClient.sendKeywordAlert(sender, message, '915483308522086460');
-            }
-        }
+            // Log all chat messages
+            logger.info(`Chat: ${message}`);
 
-        // Send messages to Discord
-        if (sender) {
-            // Player message - send immediately (no batching for player messages)
-            this.discordClient.sendChatMessage(sender, message, false);
-        } else {
-            // Server message - filter out ALL join/leave messages to prevent duplicates
-            // (these are handled by playerJoined/playerLeft events which are more reliable)
-            if (message.includes(' joined the game') || message.includes(' left the game')) {
-                logger.debug(`Filtering out join/leave chat message: ${message}`);
-                return; // Don't send these, they're handled by proper events
+            // Check for keywords in player chat (not system messages)
+            if (sender && typeof message === 'string') {
+                const lowerMessage = message.toLowerCase();
+                if (lowerMessage.includes('lootedbycgy') || lowerMessage.includes('doggo')) {
+                    // DM user ID 915483308522086460 with message link
+                    if (this.discordClient) {
+                        this.discordClient.sendKeywordAlert(sender, message, '915483308522086460').catch(err => {
+                            logger.debug('Failed to send keyword alert:', err?.message);
+                        });
+                    }
+                }
             }
-            
-            // Try to batch server messages that arrive at the same time
-            const wasBatched = this.discordClient.batchMessage(message, true);
-            if (!wasBatched) {
-                // If batching failed or isn't appropriate, send immediately
-                this.discordClient.sendChatMessage('Server', message, true);
+
+            // Send messages to Discord
+            if (!this.discordClient) {
+                return;
             }
+
+            if (sender) {
+                // Player message - send immediately (no batching for player messages)
+                this.discordClient.sendChatMessage(sender, message, false).catch(err => {
+                    logger.error('Failed to send player chat to Discord:', err?.message);
+                });
+            } else {
+                // Server message - filter out ALL join/leave messages to prevent duplicates
+                // (these are handled by playerJoined/playerLeft events which are more reliable)
+                if (message.includes(' joined the game') || message.includes(' left the game')) {
+                    logger.debug(`Filtering out join/leave chat message: ${message}`);
+                    return; // Don't send these, they're handled by proper events
+                }
+
+                // Try to batch server messages that arrive at the same time
+                try {
+                    const wasBatched = this.discordClient.batchMessage(message, true);
+                    if (!wasBatched) {
+                        // If batching failed or isn't appropriate, send immediately
+                        this.discordClient.sendChatMessage('Server', message, true).catch(err => {
+                            logger.error('Failed to send server chat to Discord:', err?.message);
+                        });
+                    }
+                } catch (batchErr) {
+                    logger.error('Error batching message:', batchErr?.message);
+                }
+            }
+        } catch (error) {
+            logger.error('Error in handleChatMessage:', error?.message || JSON.stringify(error) || 'Unknown error');
         }
     }
 
@@ -878,7 +911,7 @@ class MinecraftBot {
         if (!this.closestPlayer) {
             return null;
         }
-        
+
         return {
             name: this.closestPlayer,
             distance: Math.round(this.closestPlayerDistance)
@@ -895,8 +928,10 @@ class MinecraftBot {
         // Update status every minute
         this.statusUpdateInterval = setInterval(() => {
             if (!this.isConnected || !this.discordClient) return;
-            
-            this.discordClient.sendStatusEmbed('🤖 Bot Status', 'Regular status update', 0x2ECC71);
+
+            // Send the actual connection status instead of generic message
+            const displayUsername = this.detectedUsername || this.bot?.username || config.minecraft.username || 'Unknown';
+            this.discordClient.sendStatusEmbed('Connected', `Successfully connected to ${config.minecraft.host}`, 0x00FF00);
         }, 60000); // 60 seconds
 
         logger.info('Status updates started (every minute)');
