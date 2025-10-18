@@ -22,13 +22,14 @@ class MinecraftDiscordBridge {
         this.server = null;
         this.startTime = Date.now();
         this.authSent = false;
+        
+        // Setup web server IMMEDIATELY in constructor for Render.com
+        this.setupWebServer();
     }
 
     async initialize() {
         try {
             logger.info('Initializing Minecraft Discord Bridge...');
-
-            this.setupWebServer();
 
             if (config.discord.enabled) {
                 logger.info('Connecting to Discord...');
@@ -49,18 +50,33 @@ class MinecraftDiscordBridge {
             this.setupConsoleCapture();
 
             logger.info('Starting Minecraft bot connection...');
+            
+            // Don't await - let connection happen in background
+            // This prevents the app from crashing during authentication
             this.minecraftBot.connect().catch((error) => {
-                logger.info('Bot connection requires authentication:', error.message);
-                if (this.discordClient && this.discordClient.setStatus) {
-                    this.discordClient.setStatus('authentication');
+                const errorMsg = error?.message || error?.toString() || '';
+                
+                // Check if this is an authentication error
+                if (errorMsg.includes('authenticate') || 
+                    errorMsg.includes('sign in') || 
+                    errorMsg.includes('First time signing in')) {
+                    logger.info('Bot connection requires authentication - waiting for user to complete auth');
+                    if (this.discordClient && this.discordClient.setStatus) {
+                        this.discordClient.setStatus('authentication');
+                    }
+                } else {
+                    logger.error('Bot connection error:', errorMsg);
                 }
             });
 
             this.setupGracefulShutdown();
             logger.info('Minecraft Discord Bridge initialized successfully');
+            logger.info('Bridge is ready - waiting for Minecraft authentication if needed');
+            
         } catch (error) {
             logger.error('Failed to initialize bridge:', error);
-            process.exit(1);
+            // Don't exit - keep web server running for health checks
+            logger.info('Web server will continue running for health checks');
         }
     }
 
@@ -167,12 +183,17 @@ class MinecraftDiscordBridge {
                     position: this.minecraftBot.bot.entity?.position
                 }
                 : null;
-            res.json({ health });
+            res.json({ 
+                status: 'healthy',
+                webServer: 'running',
+                health 
+            });
         });
 
-        const PORT = 10000;
+        const PORT = process.env.PORT || 10000;
         this.server = this.app.listen(PORT, '0.0.0.0', () => {
-            logger.info(`Web server running on http://0.0.0.0:${PORT}`);
+            logger.info(`✓ Web server running on http://0.0.0.0:${PORT}`);
+            logger.info(`✓ Health check endpoint ready at http://0.0.0.0:${PORT}/health`);
         });
     }
 
@@ -274,7 +295,8 @@ class MinecraftDiscordBridge {
 const bridge = new MinecraftDiscordBridge();
 bridge.initialize().catch((error) => {
     logger.error('Failed to start application:', error);
-    process.exit(1);
+    // Don't exit - web server is already running
+    logger.info('Web server continues running despite initialization error');
 });
 
 module.exports = bridge;
