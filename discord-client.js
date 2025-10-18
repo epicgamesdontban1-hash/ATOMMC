@@ -1,7 +1,9 @@
-const { Client, GatewayIntentBits, ChannelType, EmbedBuilder, SlashCommandBuilder, REST, Routes, Partials } = require('discord.js');
+const { Client, GatewayIntentBits, ChannelType, EmbedBuilder, SlashCommandBuilder, REST, Routes, Partials, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
 const fetch = require('node-fetch');
 const config = require('./config');
 const logger = require('./logger');
+const fs = require('fs');
+const path = require('path');
 
 class DiscordClient {
     constructor() {
@@ -16,41 +18,88 @@ class DiscordClient {
         this.isConnected = false;
         this.messageQueue = [];
         this.isProcessingQueue = false;
-        this.pendingMessages = new Map(); // For batching messages by timestamp
+        this.pendingMessages = new Map();
         this.batchTimeout = null;
-        this.minecraftBot = null; // Reference to minecraft bot for sending messages
-        this.statusMessageId = null; // Persistent status message for reactions
-        this.playerListMessageId = null; // Persistent player list message
-        this.reactionDebounce = new Map(); // Prevent reaction spam
-        this.statusUpdateInProgress = false; // Prevent multiple simultaneous status updates
-        this.playerListUpdateInProgress = false; // Prevent multiple simultaneous player list updates
-        this.authMessageId = null; // Auth message to delete after successful connection
+        this.minecraftBot = null;
+        this.statusUpdateInProgress = false;
+        this.playerListUpdateInProgress = false;
+        this.authMessageId = null;
+        this.queueRetries = new Map();
+        this.maxQueueRetries = 3;
+        this.messageIdsFile = path.join('./cache', 'discord-message-ids.json');
+        
+        this.loadMessageIds();
+    }
+    
+    loadMessageIds() {
+        try {
+            if (!fs.existsSync('./cache')) {
+                fs.mkdirSync('./cache', { recursive: true });
+            }
+            
+            if (fs.existsSync(this.messageIdsFile)) {
+                const data = fs.readFileSync(this.messageIdsFile, 'utf8');
+                const ids = JSON.parse(data);
+                this.statusMessageId = ids.statusMessageId || config.discord.statusMessageId || null;
+                this.playerListMessageId = ids.playerListMessageId || config.discord.playerListMessageId || null;
+                logger.info(`Loaded persisted message IDs from file`);
+            } else {
+                this.statusMessageId = config.discord.statusMessageId || null;
+                this.playerListMessageId = config.discord.playerListMessageId || null;
+                logger.info(`No persisted message IDs file found, using config values`);
+            }
+            
+            if (this.statusMessageId) {
+                logger.info(`Status message ID: ${this.statusMessageId}`);
+            }
+            if (this.playerListMessageId) {
+                logger.info(`Player list message ID: ${this.playerListMessageId}`);
+            }
+        } catch (error) {
+            logger.error('Failed to load message IDs:', error.message);
+            this.statusMessageId = config.discord.statusMessageId || null;
+            this.playerListMessageId = config.discord.playerListMessageId || null;
+        }
+    }
+    
+    saveMessageIds() {
+        try {
+            if (!fs.existsSync('./cache')) {
+                fs.mkdirSync('./cache', { recursive: true });
+            }
+            
+            const data = {
+                statusMessageId: this.statusMessageId,
+                playerListMessageId: this.playerListMessageId,
+                lastUpdated: new Date().toISOString()
+            };
+            
+            fs.writeFileSync(this.messageIdsFile, JSON.stringify(data, null, 2), 'utf8');
+            logger.debug('Saved message IDs to file');
+        } catch (error) {
+            logger.error('Failed to save message IDs:', error.message);
+        }
     }
 
     async connect() {
         if (config.discord.webhook) {
-            // Use webhook for sending messages
             this.webhook = config.discord.webhook;
             this.isConnected = true;
             logger.info('Using Discord webhook for message sending');
             return;
         }
 
-        // Use Discord bot
         try {
             logger.info('Connecting to Discord...');
 
             this.client = new Client({
                 intents: [
                     GatewayIntentBits.Guilds,
-                    GatewayIntentBits.GuildMessages,
-                    GatewayIntentBits.GuildMessageReactions
+                    GatewayIntentBits.GuildMessages
                 ],
                 partials: [
                     Partials.Message,
-                    Partials.Channel,
-                    Partials.Reaction,
-                    Partials.User
+                    Partials.Channel
                 ]
             });
 
@@ -63,7 +112,6 @@ class DiscordClient {
                     logger.warn('Continuing without full channel setup:', error.message);
                 }
                 this.isConnected = true;
-                // Set initial status
                 await this.setStatus('startup');
             });
 
@@ -76,15 +124,12 @@ class DiscordClient {
                 this.isConnected = false;
             });
 
-            // Handle slash command interactions
             this.client.on('interactionCreate', async (interaction) => {
-                if (!interaction.isChatInputCommand()) return;
-                await this.handleSlashCommand(interaction);
-            });
-
-            // Handle reaction-based bot control
-            this.client.on('messageReactionAdd', async (reaction, user) => {
-                await this.handleReactionAdd(reaction, user);
+                if (interaction.isChatInputCommand()) {
+                    await this.handleSlashCommand(interaction);
+                } else if (interaction.isButton()) {
+                    await this.handleButtonInteraction(interaction);
+                }
             });
 
             await this.client.login(config.discord.token);
@@ -94,7 +139,67 @@ class DiscordClient {
         }
     }
 
+    async handleButtonInteraction(interaction) {
+        try {
+            if (!interaction.customId.startsWith('bot_')) return;
+
+            const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+            if (!member || (!member.permissions.has('Administrator') && !member.permissions.has('ManageGuild'))) {
+                return await interaction.reply({ 
+                    content: '❌ You need Administrator or Manage Server permissions to control the bot', 
+                    ephemeral: true 
+                });
+            }
+
+            if (interaction.customId === 'bot_connect') {
+                logger.info(`${interaction.user.username} requested bot connection via button`);
+                
+                if (this.minecraftBot && !this.minecraftBot.isConnected) {
+                    this.minecraftBot.shouldReconnect = true;
+                    this.minecraftBot.resumeReconnect();
+                    await interaction.reply({ 
+                        content: '🔄 Attempting to connect...', 
+                        ephemeral: true 
+                    });
+                    await this.sendStatusEmbed('🔄 Connecting...', 'Connection requested via Discord button', 0xFFAA00);
+                } else if (this.minecraftBot && this.minecraftBot.isConnected) {
+                    await interaction.reply({ 
+                        content: '✅ Bot is already connected', 
+                        ephemeral: true 
+                    });
+                }
+            } else if (interaction.customId === 'bot_disconnect') {
+                logger.info(`${interaction.user.username} requested bot shutdown via button`);
+                
+                if (this.minecraftBot) {
+                    this.minecraftBot.shouldReconnect = false;
+                    if (this.minecraftBot.isConnected) {
+                        await this.minecraftBot.disconnect();
+                    }
+                    await interaction.reply({ 
+                        content: '⛔ Bot has been stopped', 
+                        ephemeral: true 
+                    });
+                    await this.sendStatusEmbed('⛔ Shutdown', 'Bot manually stopped via Discord button', 0xE74C3C);
+                }
+            }
+        } catch (error) {
+            logger.error('Error handling button interaction:', error);
+            if (!interaction.replied && !interaction.deferred) {
+                await interaction.reply({ 
+                    content: '❌ An error occurred', 
+                    ephemeral: true 
+                }).catch(() => {});
+            }
+        }
+    }
+
     async setupSlashCommands() {
+        if (!this.client || !this.client.user) {
+            logger.debug('Skipping slash command registration (webhook mode or client not ready)');
+            return;
+        }
+        
         try {
             const commands = [
                 new SlashCommandBuilder()
@@ -180,12 +285,9 @@ class DiscordClient {
 
     async setupChannels() {
         try {
-            // Setup critical channels (required)
             const criticalChannels = ['logs', 'login', 'status'];
-            // Setup optional channels
             const optionalChannels = ['playerList'];
 
-            // Setup critical channels first
             for (const type of criticalChannels) {
                 const channelId = config.discord.channels[type];
                 this.channels[type] = await this.client.channels.fetch(channelId);
@@ -201,7 +303,6 @@ class DiscordClient {
                 logger.info(`Connected to Discord ${type} channel: #${this.channels[type].name}`);
             }
 
-            // Setup optional channels (skip if they fail)
             for (const type of optionalChannels) {
                 try {
                     const channelId = config.discord.channels[type];
@@ -223,104 +324,11 @@ class DiscordClient {
                 }
             }
 
-            // Send startup status embed
             await this.sendStatusEmbed('Starting up', 'Minecraft bot is initializing...', 0xFFFF00);
-
-            // Process any queued messages
             this.processMessageQueue();
         } catch (error) {
             logger.error('Failed to setup Discord channels:', error);
             throw error;
-        }
-    }
-
-    async handleReactionAdd(reaction, user) {
-        try {
-            // Handle partial reactions
-            if (reaction.partial) {
-                try {
-                    await reaction.fetch();
-                } catch (error) {
-                    logger.warn('Failed to fetch partial reaction:', error.message);
-                    return;
-                }
-            }
-            
-            // Ignore bot reactions
-            if (user.bot) return;
-            
-            // Only handle reactions on our status message
-            if (!this.statusMessageId || reaction.message.id !== this.statusMessageId) return;
-            
-            // Check if this is in the status channel
-            if (!this.channels.status || reaction.message.channel.id !== this.channels.status.id) return;
-            
-            // Basic authorization - only allow members with admin permissions or manage server
-            const member = await reaction.message.guild.members.fetch(user.id).catch(() => null);
-            if (!member || (!member.permissions.has('Administrator') && !member.permissions.has('ManageGuild'))) {
-                logger.warn(`${user.username} attempted to control bot without permissions`);
-                // Remove the reaction
-                try {
-                    await reaction.users.remove(user.id);
-                } catch (removeError) {
-                    logger.debug('Failed to remove unauthorized reaction:', removeError.message);
-                }
-                return;
-            }
-            
-            // Debounce to prevent reaction spam
-            const userId = user.id;
-            const debounceKey = `${userId}_${reaction.emoji.name}`;
-            
-            if (this.reactionDebounce.has(debounceKey)) {
-                const lastReaction = this.reactionDebounce.get(debounceKey);
-                if (Date.now() - lastReaction < 3000) { // 3 second cooldown
-                    logger.debug(`Reaction debounced for user ${user.username}`);
-                    return;
-                }
-            }
-            
-            this.reactionDebounce.set(debounceKey, Date.now());
-            
-            // Handle different reactions
-            const emojiName = reaction.emoji.name;
-            
-            if (emojiName === '✅') {
-                // Connect/Resume bot
-                logger.info(`${user.username} requested bot connection via reaction`);
-                
-                if (this.minecraftBot && !this.minecraftBot.isConnected) {
-                    this.minecraftBot.shouldReconnect = true;
-                    this.minecraftBot.resumeReconnect();
-                    await this.sendStatusEmbed('🔄 Connecting...', 'Connection requested via Discord reaction', 0xFFAA00);
-                } else if (this.minecraftBot && this.minecraftBot.isConnected) {
-                    logger.info('Bot is already connected');
-                }
-                
-            } else if (emojiName === '❌') {
-                // Shutdown bot - disable reconnection
-                logger.info(`${user.username} requested bot shutdown via reaction`);
-                
-                if (this.minecraftBot) {
-                    this.minecraftBot.shouldReconnect = false;
-                    if (this.minecraftBot.isConnected) {
-                        await this.minecraftBot.disconnect();
-                    }
-                    await this.sendStatusEmbed('⛔ Shutdown', 'Bot manually stopped via Discord reaction', 0xE74C3C);
-                } else {
-                    logger.info('Bot is already disconnected');
-                }
-            }
-            
-            // Remove the user's reaction for cleanliness (optional)
-            try {
-                await reaction.users.remove(user.id);
-            } catch (removeError) {
-                logger.debug('Failed to remove user reaction:', removeError.message);
-            }
-            
-        } catch (error) {
-            logger.error('Error handling reaction:', error);
         }
     }
 
@@ -330,13 +338,11 @@ class DiscordClient {
             return;
         }
 
-        // Truncate very long messages
         if (message.length > 1900) {
             message = message.substring(0, 1900) + '... (truncated)';
         }
 
         if (!this.isConnected) {
-            // Queue message if not connected
             this.messageQueue.push({message, channelType});
             logger.debug('Message queued (Discord not connected)');
             return;
@@ -352,7 +358,6 @@ class DiscordClient {
             }
         } catch (error) {
             logger.error('Failed to send Discord message:', error);
-            // Re-queue message on failure
             this.messageQueue.unshift({message, channelType});
         }
     }
@@ -374,25 +379,22 @@ class DiscordClient {
                 return;
             }
 
-            // Truncate very long messages
             if (message.length > 2000) {
                 message = message.substring(0, 2000);
             }
 
             if (this.channels.logs) {
                 if (!isServerMessage) {
-                    // Enhanced player message format with rank detection
                     const rankMatch = message.match(/^\[([^\]]+)\]/);
                     const cleanMessage = rankMatch ? message.replace(/^\[[^\]]+\]\s*/, '') : message;
                     const playerRank = rankMatch ? rankMatch[1] : null;
                     
-                    // Determine color based on rank
-                    let playerColor = 0x5865F2; // Default Discord blurple
+                    let playerColor = 0x5865F2;
                     if (playerRank) {
-                        if (playerRank.includes('AGENT')) playerColor = 0xFF0000; // Red for agents
-                        else if (playerRank.includes('Pioneer')) playerColor = 0x9B59B6; // Purple for pioneers
-                        else if (playerRank.includes('Scout')) playerColor = 0x2ECC71; // Green for scouts
-                        else if (playerRank.includes('VIP')) playerColor = 0xF1C40F; // Gold for VIP
+                        if (playerRank.includes('AGENT')) playerColor = 0xFF0000;
+                        else if (playerRank.includes('Pioneer')) playerColor = 0x9B59B6;
+                        else if (playerRank.includes('Scout')) playerColor = 0x2ECC71;
+                        else if (playerRank.includes('VIP')) playerColor = 0xF1C40F;
                     }
                     
                     const embed = new EmbedBuilder()
@@ -413,54 +415,41 @@ class DiscordClient {
                         throw err;
                     });
                 } else {
-                    // Enhanced server message format with better categorization
-                    let messageColor = 0x57F287; // Default green
-                    let messageIcon = '📢';
+                    let messageColor = 0x57F287;
                     let messageCategory = 'Server Message';
                     let authorName = 'Server System';
                     let authorIcon = 'https://mc-heads.net/avatar/MHF_Question/32';
                     
-                    // Extract player name from server messages for avatar
                     let detectedPlayer = null;
                     
-                    // Try to extract player name from various message formats
                     if (message.includes('joined the game')) {
                         const joinMatch = message.match(/^(\w+) joined the game/);
                         detectedPlayer = joinMatch ? joinMatch[1] : null;
-                        messageColor = 0x2ECC71; // Green for joins
-                        messageIcon = '📥';
+                        messageColor = 0x2ECC71;
                         messageCategory = 'Player Joined';
                     } else if (message.includes('left the game')) {
                         const leaveMatch = message.match(/^(\w+) left the game/);
                         detectedPlayer = leaveMatch ? leaveMatch[1] : null;
-                        messageColor = 0xE67E22; // Orange for leaves
-                        messageIcon = '📤';
+                        messageColor = 0xE67E22;
                         messageCategory = 'Player Left';
                     } else if (message.includes('vote') || message.includes('Vote')) {
-                        messageColor = 0x3498DB; // Blue for voting
-                        messageIcon = '🗳️';
+                        messageColor = 0x3498DB;
                         messageCategory = 'Vote Reminder';
                     } else if (message.includes('PLAYERWARPS') || message.includes('warp')) {
-                        messageColor = 0x9B59B6; // Purple for warps
-                        messageIcon = '🌀';
+                        messageColor = 0x9B59B6;
                         messageCategory = 'Player Warp';
                     } else if (message.includes('death') || message.includes('killed') || message.includes('died')) {
-                        // Try to extract player name from death messages
                         const deathMatch = message.match(/^(\w+) (was|died|killed)/);
                         detectedPlayer = deathMatch ? deathMatch[1] : null;
-                        messageColor = 0xE74C3C; // Red for death
-                        messageIcon = '💀';
+                        messageColor = 0xE74C3C;
                         messageCategory = 'Death Event';
                     } else if (message.includes('achievement') || message.includes('advancement')) {
-                        // Try to extract player name from advancement messages
                         const achievementMatch = message.match(/^(\w+) has (made the advancement|completed the challenge|reached the goal)/);
                         detectedPlayer = achievementMatch ? achievementMatch[1] : null;
-                        messageColor = 0xF1C40F; // Yellow for achievements
-                        messageIcon = '🏆';
+                        messageColor = 0xF1C40F;
                         messageCategory = 'Achievement';
                     }
                     
-                    // If we detected a player, use their head as the icon
                     if (detectedPlayer) {
                         authorName = detectedPlayer;
                         authorIcon = `https://mc-heads.net/avatar/${detectedPlayer}/32`;
@@ -487,7 +476,6 @@ class DiscordClient {
             }
         } catch (error) {
             logger.error('Failed to send chat message:', error?.message || JSON.stringify(error) || 'Unknown error');
-            // Don't re-throw the error to prevent crashes
         }
     }
 
@@ -495,15 +483,13 @@ class DiscordClient {
         if (!this.isConnected || !this.channels.logs) return;
 
         try {
-            // Limit description length to avoid Discord limits
             let description = messages.join('\n');
             if (description.length > 1900) {
                 description = description.substring(0, 1900) + '... (truncated)';
             }
 
-            // Create single embed with multiple server messages
             const embed = new EmbedBuilder()
-                .setColor(0x57F287) // Green for server messages
+                .setColor(0x57F287)
                 .setAuthor({
                     name: 'Server System',
                     iconURL: 'https://mc-heads.net/avatar/MHF_Question/32'
@@ -524,12 +510,11 @@ class DiscordClient {
 
     batchMessage(message, isServerMessage = false) {
         if (!isServerMessage) {
-            // Player messages send immediately and directly
             return false;
         }
 
         const now = Date.now();
-        const batchKey = Math.floor(now / 2000); // Group by 2-second windows
+        const batchKey = Math.floor(now / 2000);
 
         if (!this.pendingMessages.has(batchKey)) {
             this.pendingMessages.set(batchKey, []);
@@ -537,28 +522,24 @@ class DiscordClient {
 
         this.pendingMessages.get(batchKey).push(message);
 
-        // Clear old batch timeout
         if (this.batchTimeout) {
             clearTimeout(this.batchTimeout);
         }
 
-        // Set new timeout to send batched messages (shorter timeout for responsiveness)
         this.batchTimeout = setTimeout(() => {
             this.flushBatchedMessages();
-        }, 1500); // 1.5 second delay
+        }, 1500);
 
         logger.debug(`Batched server message: "${message}" (${this.pendingMessages.get(batchKey).length} messages in batch)`);
-        return true; // Message was batched
+        return true;
     }
 
     async flushBatchedMessages() {
         try {
             for (const [timestamp, messages] of this.pendingMessages.entries()) {
                 if (messages.length === 1) {
-                    // Single message - send as regular server message
                     await this.sendChatMessage('Server', messages[0], true);
                 } else if (messages.length > 1) {
-                    // Multiple messages - combine into one embed
                     logger.info(`Sending ${messages.length} batched server messages`);
                     await this.sendBatchedMessages(messages);
                 }
@@ -572,7 +553,6 @@ class DiscordClient {
     }
 
     async sendStatusEmbed(title, description, color = 0x00FF00) {
-        // Prevent multiple simultaneous status updates
         if (this.statusUpdateInProgress) {
             logger.debug('Status update already in progress, skipping duplicate');
             return;
@@ -581,53 +561,47 @@ class DiscordClient {
         this.statusUpdateInProgress = true;
         
         try {
-            // Create rich status embed using the same format as /status command
             const bot = this.minecraftBot;
             const isOnline = bot?.isConnected;
             const playerCount = bot?.players?.size || 0;
-            
-            // Use detected username if available, fallback to config username, never hardcode
             const displayUsername = bot?.detectedUsername || bot?.bot?.username || config.minecraft.username || 'Unknown';
-            
-            // Get closest player info
             const closestPlayerInfo = bot?.getClosestPlayerInfo?.() || null;
             
-            // Determine status and color based on connection state with enhanced descriptions
             let statusText = description;
             let embedColor = color;
             let statusIcon = '🔴';
             
             if (title.includes('Connected') || description.includes('connected') || description.includes('online')) {
                 statusText = `🟢 **ONLINE & ACTIVE** • Successfully connected to \`${config.minecraft.host}\`\n✨ Bot is monitoring chat and ready for commands`;
-                embedColor = 0x00FF41; // Bright green
+                embedColor = 0x00FF41;
                 statusIcon = '🟢';
             } else if (title.includes('Disconnected') || description.includes('disconnected') || description.includes('offline')) {
                 statusText = `🔴 **OFFLINE** • Lost connection to \`${config.minecraft.host}\`\n🔄 Auto-reconnect will attempt to restore connection`;
-                embedColor = 0xFF4757; // Red
+                embedColor = 0xFF4757;
                 statusIcon = '🔴';
             } else if (title.includes('Starting') || description.includes('initializing') || description.includes('starting')) {
                 statusText = `🟡 **INITIALIZING** • Establishing secure connection to \`${config.minecraft.host}\`\n⏳ Please wait while the bot connects...`;
-                embedColor = 0xFFA502; // Orange
+                embedColor = 0xFFA502;
                 statusIcon = '🟡';
             } else if (title.includes('Authentication') || description.includes('authenticate')) {
                 statusText = `🟣 **AUTH REQUIRED** • Microsoft authentication needed\n🔐 Please complete authentication to continue`;
-                embedColor = 0x9B59B6; // Purple
+                embedColor = 0x9B59B6;
                 statusIcon = '🟣';
             } else if (title.includes('Error') || title.includes('Failed') || description.includes('error') || description.includes('failed')) {
                 statusText = `🔴 **CONNECTION FAILED** • Unable to reach \`${config.minecraft.host}\`\n❌ ${description}`;
-                embedColor = 0xFF3838; // Bright red
+                embedColor = 0xFF3838;
                 statusIcon = '🔴';
             } else if (title.includes('Kicked')) {
                 statusText = `⚠️ **KICKED FROM SERVER** • \`${config.minecraft.host}\`\n🚫 ${description}`;
-                embedColor = 0xFF8C00; // Orange-red
+                embedColor = 0xFF8C00;
                 statusIcon = '⚠️';
             } else if (title.includes('Walk') || title.includes('walking')) {
                 statusText = `🚶 **MOVEMENT ACTIVE** • Bot is executing movement command\n📍 ${description}`;
-                embedColor = 0x3498DB; // Blue
+                embedColor = 0x3498DB;
                 statusIcon = '🚶';
             } else if (title.includes('Respawn') || title.includes('Died')) {
                 statusText = `💀 **RESPAWNED** • Bot died and has been automatically respawned\n🏥 Health restored, continuing operations`;
-                embedColor = 0xFF6B6B; // Light red
+                embedColor = 0xFF6B6B;
                 statusIcon = '💀';
             }
 
@@ -652,43 +626,44 @@ class DiscordClient {
                     inline: true 
                 }
             )
-            .setFooter({ 
-                text: `✅ connect • ❌ disconnect`, 
-                iconURL: `https://mc-heads.net/avatar/${displayUsername}/16`
-            })
             .setTimestamp();
 
+            const row = new ActionRowBuilder()
+                .addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('bot_connect')
+                        .setLabel('Connect')
+                        .setStyle(ButtonStyle.Success)
+                        .setEmoji('✅'),
+                    new ButtonBuilder()
+                        .setCustomId('bot_disconnect')
+                        .setLabel('Disconnect')
+                        .setStyle(ButtonStyle.Danger)
+                        .setEmoji('❌')
+                );
+
             if (!this.isConnected) {
-                this.messageQueue.push({embed, channelType: 'status', isStatusUpdate: true});
+                this.messageQueue.push({embed, row, channelType: 'status', isStatusUpdate: true});
                 return;
             }
 
             if (this.channels.status) {
-                // Use environment variable for status message ID if available, otherwise use stored ID
-                const targetStatusMessageId = process.env.DISCORD_STATUS_MESSAGE_ID || this.statusMessageId;
-                
-                if (targetStatusMessageId) {
-                    // Try to edit existing persistent status message
+                if (this.statusMessageId) {
                     try {
-                        const message = await this.channels.status.messages.fetch(targetStatusMessageId);
-                        await message.edit({ embeds: [embed] });
+                        const message = await this.channels.status.messages.fetch(this.statusMessageId);
+                        await message.edit({ embeds: [embed], components: [row] });
                         logger.debug('Updated existing status message');
-                        // Store the environment message ID if we successfully used it
-                        if (process.env.DISCORD_STATUS_MESSAGE_ID) {
-                            this.statusMessageId = process.env.DISCORD_STATUS_MESSAGE_ID;
-                        }
                         return;
                     } catch (fetchError) {
-                        logger.warn(`Failed to fetch existing status message (ID: ${targetStatusMessageId}), creating new one: ${fetchError.message}`);
-                        // Don't reset statusMessageId to null here - just create a new one
+                        logger.warn(`Failed to fetch existing status message (ID: ${this.statusMessageId}), creating new one`);
+                        this.statusMessageId = null;
                     }
                 }
                 
-                // Create new persistent status message
-                const message = await this.channels.status.send({ embeds: [embed] });
+                const message = await this.channels.status.send({ embeds: [embed], components: [row] });
                 this.statusMessageId = message.id;
-                logger.info(`Created persistent status message with ID: ${this.statusMessageId}`);
-                await this.addStatusReactions(message);
+                this.saveMessageIds();
+                logger.info(`Created and persisted status message with ID: ${this.statusMessageId}`);
             }
         } catch (error) {
             logger.error('Failed to send status embed:', error.message || error);
@@ -697,18 +672,7 @@ class DiscordClient {
         }
     }
 
-    async addStatusReactions(message) {
-        try {
-            await message.react('✅'); // Connect/Resume
-            await message.react('❌'); // Disconnect
-            logger.debug('Added status control reactions to message');
-        } catch (error) {
-            logger.warn('Failed to add reactions to status message:', error.message);
-        }
-    }
-
     async sendPlayerListEmbed(players) {
-        // Prevent multiple simultaneous player list updates
         if (this.playerListUpdateInProgress) {
             logger.debug('Player list update already in progress, skipping duplicate');
             return;
@@ -729,30 +693,22 @@ class DiscordClient {
             }
 
             if (this.channels.playerList) {
-                // Use hardcoded player list message ID from secrets if available, otherwise use stored ID
-                const targetPlayerListMessageId = process.env.DISCORD_PLAYER_LIST_MESSAGE_ID || this.playerListMessageId;
-                
-                if (targetPlayerListMessageId) {
-                    // Try to edit existing persistent player list message
+                if (this.playerListMessageId) {
                     try {
-                        const message = await this.channels.playerList.messages.fetch(targetPlayerListMessageId);
+                        const message = await this.channels.playerList.messages.fetch(this.playerListMessageId);
                         await message.edit({ embeds: [embed] });
                         logger.debug('Player list updated successfully');
-                        // Store the hardcoded message ID if we successfully used it
-                        if (process.env.DISCORD_PLAYER_LIST_MESSAGE_ID) {
-                            this.playerListMessageId = process.env.DISCORD_PLAYER_LIST_MESSAGE_ID;
-                        }
                         return;
                     } catch (fetchError) {
-                        logger.warn(`Failed to fetch existing player list message (ID: ${targetPlayerListMessageId}), creating new one: ${fetchError.message}`);
-                        // Don't reset playerListMessageId to null here - just create a new one
+                        logger.warn(`Failed to fetch existing player list message (ID: ${this.playerListMessageId}), creating new one`);
+                        this.playerListMessageId = null;
                     }
                 }
                 
-                // Create new persistent message
                 const sentMessage = await this.channels.playerList.send({ embeds: [embed] });
                 this.playerListMessageId = sentMessage.id;
-                logger.info(`Created new player list message with ID: ${this.playerListMessageId}`);
+                this.saveMessageIds();
+                logger.info(`Created and persisted player list message with ID: ${this.playerListMessageId}`);
             }
         } catch (error) {
             logger.error('Failed to send player list embed:', error.message || error);
@@ -818,7 +774,6 @@ class DiscordClient {
                 throw new Error(`Webhook request failed: ${response.status} ${response.statusText}`);
             }
 
-            // Discord webhook rate limit: 30 requests per minute
             await new Promise(resolve => setTimeout(resolve, 2000));
         } catch (error) {
             logger.error('Failed to send webhook message:', error);
@@ -831,44 +786,57 @@ class DiscordClient {
             return;
         }
 
+        if (this.messageQueue.length > 100) {
+            logger.warn(`Message queue overflow detected (${this.messageQueue.length} messages), clearing old messages`);
+            this.messageQueue.splice(0, this.messageQueue.length - 50);
+        }
+
         this.isProcessingQueue = true;
         logger.info(`Processing ${this.messageQueue.length} queued messages`);
 
         while (this.messageQueue.length > 0 && this.isConnected) {
             const item = this.messageQueue.shift();
+            const retryKey = JSON.stringify(item);
+            const retryCount = this.queueRetries.get(retryKey) || 0;
+            
             try {
                 if (this.webhook) {
                     await this.sendWebhookMessage(item.message || item.embed?.data?.description || 'Message');
                 } else if (item.embed) {
-                    // Send embed to appropriate channel
                     const channel = this.channels[item.channelType] || this.channels.logs;
-                    if (item.isStatusUpdate && item.channelType === 'status') {
-                        // Edit status message instead of sending new ones
-                        const statusMessageId = config.discord.statusMessageId;
-                        if (statusMessageId) {
-                            try {
-                                const message = await this.channels.status.messages.fetch(statusMessageId);
-                                await message.edit({ embeds: [item.embed] });
-                            } catch {
-                                await channel.send({ embeds: [item.embed] });
-                            }
-                        } else {
-                            await channel.send({ embeds: [item.embed] });
-                        }
+                    if (item.row) {
+                        await channel.send({ embeds: [item.embed], components: [item.row] });
                     } else {
                         await channel.send({ embeds: [item.embed] });
                     }
                 } else if (item.message) {
-                    // Send regular message to appropriate channel
                     const channel = this.channels[item.channelType] || this.channels.logs;
                     await channel.send(item.message);
                 }
-                // Small delay to avoid rate limits
+                
+                this.queueRetries.delete(retryKey);
                 await new Promise(resolve => setTimeout(resolve, 500));
             } catch (error) {
                 logger.error('Failed to send queued message:', error);
-                // Re-queue the message
-                this.messageQueue.unshift(item);
+                
+                if (retryCount < this.maxQueueRetries) {
+                    this.queueRetries.set(retryKey, retryCount + 1);
+                    this.messageQueue.push(item);
+                    const backoffDelay = Math.min(1000 * Math.pow(2, retryCount), 30000);
+                    logger.warn(`Requeued message (attempt ${retryCount + 1}/${this.maxQueueRetries}), backing off ${backoffDelay}ms`);
+                    await new Promise(resolve => setTimeout(resolve, backoffDelay));
+                } else {
+                    logger.error(`CRITICAL: Message dropped after ${this.maxQueueRetries} retries - Discord may be experiencing issues`);
+                    this.queueRetries.delete(retryKey);
+                    
+                    if (this.minecraftBot && this.minecraftBot.isConnected) {
+                        try {
+                            this.minecraftBot.bot.chat('[Bot] Warning: Discord message queue experiencing failures');
+                        } catch (e) {
+                            logger.debug('Failed to send in-game alert:', e.message);
+                        }
+                    }
+                }
                 break;
             }
         }
@@ -880,7 +848,6 @@ class DiscordClient {
         const { commandName } = interaction;
         const startTime = Date.now();
 
-        // Check bot connection for commands that require it
         const requiresConnection = ['message', 'walk', 'location', 'health', 'jump', 'look', 'stop'];
         if (requiresConnection.includes(commandName) && (!this.minecraftBot || !this.minecraftBot.isConnected || !this.minecraftBot.bot)) {
             return await interaction.reply({ 
@@ -1098,19 +1065,16 @@ class DiscordClient {
         }
     }
 
-    // Helper method to convert yaw to compass direction
     getDirectionFromYaw(yaw) {
         const angle = ((yaw * 180) / Math.PI + 180) % 360;
         const directions = ['South', 'Southwest', 'West', 'Northwest', 'North', 'Northeast', 'East', 'Southeast'];
         return directions[Math.round(angle / 45) % 8];
     }
 
-    // Method to set minecraft bot reference
     setMinecraftBot(minecraftBot) {
         this.minecraftBot = minecraftBot;
     }
 
-    // Method to set custom Discord status
     async setStatus(state, additionalInfo = '') {
         if (!this.client || !this.client.user) return;
 
@@ -1121,42 +1085,42 @@ class DiscordClient {
                 case 'startup':
                     activity = {
                         name: 'Starting up...',
-                        type: 0 // Playing
+                        type: 0
                     };
                     status = 'idle';
                     break;
                 case 'authentication':
                     activity = {
                         name: 'Authentication Mode',
-                        type: 0 // Playing
+                        type: 0
                     };
                     status = 'dnd';
                     break;
                 case 'disconnected':
                     activity = {
                         name: 'Not connected',
-                        type: 0 // Playing
+                        type: 0
                     };
                     status = 'dnd';
                     break;
                 case 'connected':
                     activity = {
                         name: `Connected and monitoring${additionalInfo}`,
-                        type: 0 // Playing
+                        type: 0
                     };
                     status = 'online';
                     break;
                 case 'error':
                     activity = {
                         name: 'Connection Error',
-                        type: 0 // Playing
+                        type: 0
                     };
                     status = 'dnd';
                     break;
                 default:
                     activity = {
                         name: 'Minecraft Bridge Bot',
-                        type: 0 // Playing
+                        type: 0
                     };
                     status = 'online';
             }

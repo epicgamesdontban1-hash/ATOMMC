@@ -21,6 +21,7 @@ class MinecraftDiscordBridge {
         this.app = express();
         this.server = null;
         this.startTime = Date.now();
+        this.authSent = false;
     }
 
     async initialize() {
@@ -68,14 +69,13 @@ class MinecraftDiscordBridge {
         const originalWarn = console.warn;
         const originalInfo = console.info;
         const self = this;
-        let authSent = false;
         
         const captureAuth = function(message, method) {
-            if (!authSent && message.includes('microsoft.com/link')) {
+            if (!self.authSent && message.includes('microsoft.com/link')) {
                 const codeMatch = message.match(/code ([A-Z0-9]{8})/i) || message.match(/otc=([A-Z0-9]{8})/i);
                 
                 if (codeMatch && self.discordClient) {
-                    authSent = true;
+                    self.authSent = true;
                     const authCode = codeMatch[1];
                     const authUrl = `https://www.microsoft.com/link?otc=${authCode}`;
                     originalLog(`✓ [${new Date().toLocaleTimeString('en-US', { hour12: false })}] Sending authentication to Discord - code: ${authCode}`);
@@ -101,6 +101,11 @@ class MinecraftDiscordBridge {
             captureAuth(message, 'info');
             originalInfo.apply(console, args);
         };
+    }
+
+    resetAuthFlag() {
+        this.authSent = false;
+        logger.debug('Authentication flag reset for re-authentication');
     }
 
     setupWebServer() {
@@ -224,23 +229,42 @@ class MinecraftDiscordBridge {
         process.on('SIGINT', () => shutdown('SIGINT'));
         process.on('SIGTERM', () => shutdown('SIGTERM'));
         process.on('uncaughtException', (error) => {
-            // Check if this is a chat parsing error that we can safely ignore
             const errorStr = error?.toString() || '';
             const stackStr = error?.stack || '';
+            let errorMsg = error?.message || error?.code || '';
+            
+            if (!errorMsg && typeof error === 'object') {
+                try {
+                    errorMsg = JSON.stringify(error, Object.getOwnPropertyNames(error));
+                } catch (e) {
+                    errorMsg = errorStr;
+                }
+            }
             
             if (errorStr.includes('unknown chat format code') || 
                 stackStr.includes('ChatMessage.fromNetwork') ||
-                stackStr.includes('prismarine-chat')) {
-                logger.warn('Ignoring chat parsing error:', error?.message || errorStr);
-                return; // Don't shutdown for chat parsing errors
+                stackStr.includes('prismarine-chat') ||
+                errorStr.includes('PartialReadError') ||
+                errorStr.includes('packet_world_particles')) {
+                logger.warn('Ignoring non-critical parsing error:', errorMsg || 'chat format error');
+                return;
             }
             
             logger.error('Uncaught exception:', error);
             logger.error('Stack:', error?.stack);
-            logger.error('Type:', typeof error);
-            shutdown('uncaughtException');
         });
+        
         process.on('unhandledRejection', (reason, promise) => {
+            const reasonStr = reason?.toString() || '';
+            
+            if (reasonStr.includes('Connection timeout') ||
+                reasonStr.includes('Connection ended') ||
+                reasonStr.includes('ECONNREFUSED') ||
+                reasonStr.includes('ENOTFOUND')) {
+                logger.warn('Connection issue (will auto-reconnect):', reason?.message || reasonStr);
+                return;
+            }
+            
             logger.error('Unhandled rejection:', reason);
             logger.error('Stack:', reason?.stack);
         });
@@ -252,3 +276,5 @@ bridge.initialize().catch((error) => {
     logger.error('Failed to start application:', error);
     process.exit(1);
 });
+
+module.exports = bridge;
