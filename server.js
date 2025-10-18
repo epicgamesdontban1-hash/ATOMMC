@@ -170,7 +170,7 @@ class MinecraftDiscordBridge {
             res.json({ health });
         });
 
-        const PORT = 5000;
+        const PORT = 10000;
         this.server = this.app.listen(PORT, '0.0.0.0', () => {
             logger.info(`Web server running on http://0.0.0.0:${PORT}`);
         });
