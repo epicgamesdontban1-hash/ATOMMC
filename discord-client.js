@@ -5,6 +5,10 @@ const logger = require('./logger');
 const fs = require('fs');
 const path = require('path');
 
+// ============================================================================
+// DISCORD CLIENT CLASS
+// ============================================================================
+
 class DiscordClient {
     constructor() {
         this.client = null;
@@ -30,6 +34,10 @@ class DiscordClient {
         
         this.loadMessageIds();
     }
+
+    // ========================================================================
+    // MESSAGE ID PERSISTENCE
+    // ========================================================================
     
     loadMessageIds() {
         try {
@@ -80,6 +88,10 @@ class DiscordClient {
             logger.error('Failed to save message IDs:', error.message);
         }
     }
+
+    // ========================================================================
+    // CONNECTION MANAGEMENT
+    // ========================================================================
 
     async connect() {
         if (config.discord.webhook) {
@@ -139,6 +151,10 @@ class DiscordClient {
         }
     }
 
+    // ========================================================================
+    // BUTTON INTERACTIONS
+    // ========================================================================
+
     async handleButtonInteraction(interaction) {
         try {
             if (!interaction.customId.startsWith('bot_')) return;
@@ -193,6 +209,10 @@ class DiscordClient {
             }
         }
     }
+
+    // ========================================================================
+    // SLASH COMMAND SETUP
+    // ========================================================================
 
     async setupSlashCommands() {
         if (!this.client || !this.client.user) {
@@ -331,6 +351,10 @@ class DiscordClient {
             throw error;
         }
     }
+
+    // ========================================================================
+    // MESSAGE SENDING
+    // ========================================================================
 
     async sendMessage(message, channelType = 'logs') {
         if (!message || typeof message !== 'string') {
@@ -552,6 +576,10 @@ class DiscordClient {
         }
     }
 
+    // ========================================================================
+    // EMBED MESSAGES
+    // ========================================================================
+
     async sendStatusEmbed(title, description, color = 0x00FF00) {
         if (this.statusUpdateInProgress) {
             logger.debug('Status update already in progress, skipping duplicate');
@@ -565,7 +593,8 @@ class DiscordClient {
             const isOnline = bot?.isConnected;
             const playerCount = bot?.players?.size || 0;
             const displayUsername = bot?.detectedUsername || bot?.bot?.username || config.minecraft.username || 'Unknown';
-            const closestPlayerInfo = bot?.getClosestPlayerInfo?.() || null;
+            const position = bot?.bot?.entity?.position;
+            const dimension = bot?.bot?.game?.dimension || 'Unknown';
             
             let statusText = description;
             let embedColor = color;
@@ -621,12 +650,21 @@ class DiscordClient {
                     inline: true 
                 },
                 { 
-                    name: 'Closest', 
-                    value: closestPlayerInfo ? `${closestPlayerInfo.name} (${closestPlayerInfo.distance}m)` : 'None', 
+                    name: 'Dimension', 
+                    value: isOnline ? dimension : 'N/A', 
                     inline: true 
                 }
-            )
-            .setTimestamp();
+            );
+
+            if (isOnline && position) {
+                embed.addFields({
+                    name: 'Coordinates',
+                    value: `X: ${Math.round(position.x)}, Y: ${Math.round(position.y)}, Z: ${Math.round(position.z)}`,
+                    inline: false
+                });
+            }
+
+            embed.setTimestamp();
 
             const row = new ActionRowBuilder()
                 .addComponents(
@@ -844,6 +882,10 @@ class DiscordClient {
         this.isProcessingQueue = false;
     }
 
+    // ========================================================================
+    // SLASH COMMAND HANDLING
+    // ========================================================================
+
     async handleSlashCommand(interaction) {
         const { commandName } = interaction;
         const startTime = Date.now();
@@ -897,8 +939,9 @@ class DiscordClient {
                     const bot = this.minecraftBot;
                     const isOnline = bot?.isConnected;
                     const playerCount = bot?.players?.size || 0;
-                    const closestPlayerInfo = bot?.getClosestPlayerInfo?.() || null;
                     const displayUsername = bot?.detectedUsername || bot?.bot?.username || config.minecraft.username || 'Unknown';
+                    const position = bot?.bot?.entity?.position;
+                    const dimension = bot?.bot?.game?.dimension || 'Unknown';
                     
                     const embed = new EmbedBuilder()
                         .setColor(isOnline ? 0x2ECC71 : 0xE74C3C)
@@ -915,12 +958,7 @@ class DiscordClient {
                             },
                             { 
                                 name: 'Connection', 
-                                value: `**Status:** ${isOnline ? 'Online' : 'Offline'}\n**Players:** ${playerCount}\n**Attempts:** ${bot?.reconnectAttempts || 0}/${config.minecraft.maxReconnectAttempts}`, 
-                                inline: true 
-                            },
-                            { 
-                                name: 'Nearest Player', 
-                                value: closestPlayerInfo ? `**${closestPlayerInfo.name}**\n${closestPlayerInfo.distance} blocks away` : 'None detected', 
+                                value: `**Status:** ${isOnline ? 'Online' : 'Offline'}\n**Players:** ${playerCount}\n**Reconnect Attempts:** ${bot?.reconnectAttempts || 0}`, 
                                 inline: true 
                             },
                             { 
@@ -928,8 +966,17 @@ class DiscordClient {
                                 value: `**Anti-AFK:** ${config.minecraft.enableAntiAfk ? 'Enabled' : 'Disabled'}\n**Auth:** Microsoft\n**Auto-Reconnect:** Enabled`, 
                                 inline: true 
                             }
-                        )
-                        .setFooter({ text: `Bot Username: ${displayUsername}` })
+                        );
+
+                    if (isOnline && position) {
+                        embed.addFields({
+                            name: 'Current Position',
+                            value: `**Dimension:** ${dimension}\n**X:** ${Math.round(position.x)}, **Y:** ${Math.round(position.y)}, **Z:** ${Math.round(position.z)}`,
+                            inline: false
+                        });
+                    }
+
+                    embed.setFooter({ text: `Bot Username: ${displayUsername}` })
                         .setTimestamp();
                     
                     await interaction.reply({ embeds: [embed], ephemeral: true });
@@ -1065,6 +1112,10 @@ class DiscordClient {
         }
     }
 
+    // ========================================================================
+    // UTILITY FUNCTIONS
+    // ========================================================================
+
     getDirectionFromYaw(yaw) {
         const angle = ((yaw * 180) / Math.PI + 180) % 360;
         const directions = ['South', 'Southwest', 'West', 'Northwest', 'North', 'Northeast', 'East', 'Southeast'];
@@ -1074,6 +1125,10 @@ class DiscordClient {
     setMinecraftBot(minecraftBot) {
         this.minecraftBot = minecraftBot;
     }
+
+    // ========================================================================
+    // BOT STATUS MANAGEMENT
+    // ========================================================================
 
     async setStatus(state, additionalInfo = '') {
         if (!this.client || !this.client.user) return;
@@ -1105,7 +1160,7 @@ class DiscordClient {
                     break;
                 case 'connected':
                     activity = {
-                        name: `Connected and monitoring${additionalInfo}`,
+                        name: `Connected${additionalInfo}`,
                         type: 0
                     };
                     status = 'online';
