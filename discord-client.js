@@ -163,11 +163,13 @@ class DiscordClient {
         try {
             if (!interaction.customId.startsWith('bot_')) return;
 
+            // Defer the reply immediately to prevent "already acknowledged" errors
+            await interaction.deferReply({ ephemeral: true });
+
             const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
             if (!member || (!member.permissions.has('Administrator') && !member.permissions.has('ManageGuild'))) {
-                return await interaction.reply({ 
-                    content: '❌ You need Administrator or Manage Server permissions to control the bot', 
-                    ephemeral: true 
+                return await interaction.editReply({ 
+                    content: '❌ You need Administrator or Manage Server permissions to control the bot'
                 });
             }
 
@@ -177,15 +179,13 @@ class DiscordClient {
                 if (this.minecraftBot && !this.minecraftBot.isConnected) {
                     this.minecraftBot.shouldReconnect = true;
                     this.minecraftBot.resumeReconnect();
-                    await interaction.reply({ 
-                        content: '🔄 Attempting to connect...', 
-                        ephemeral: true 
+                    await interaction.editReply({ 
+                        content: '🔄 Attempting to connect...'
                     });
                     await this.sendStatusEmbed('🔄 Connecting...', 'Connection requested via Discord button', 0xFFAA00);
                 } else if (this.minecraftBot && this.minecraftBot.isConnected) {
-                    await interaction.reply({ 
-                        content: '✅ Bot is already connected', 
-                        ephemeral: true 
+                    await interaction.editReply({ 
+                        content: '✅ Bot is already connected'
                     });
                 }
             } else if (interaction.customId === 'bot_disconnect') {
@@ -196,19 +196,22 @@ class DiscordClient {
                     if (this.minecraftBot.isConnected) {
                         await this.minecraftBot.disconnect();
                     }
-                    await interaction.reply({ 
-                        content: '⛔ Bot has been stopped', 
-                        ephemeral: true 
+                    await interaction.editReply({ 
+                        content: '⛔ Bot has been stopped'
                     });
                     await this.sendStatusEmbed('⛔ Shutdown', 'Bot manually stopped via Discord button', 0xE74C3C);
                 }
             }
         } catch (error) {
-            logger.error('Error handling button interaction:', error);
+            logger.error('Error handling button interaction:', error.message || error);
             if (!interaction.replied && !interaction.deferred) {
                 await interaction.reply({ 
                     content: '❌ An error occurred', 
                     ephemeral: true 
+                }).catch(() => {});
+            } else {
+                await interaction.editReply({ 
+                    content: '❌ An error occurred'
                 }).catch(() => {});
             }
         }
@@ -513,9 +516,17 @@ class DiscordClient {
     }
 
     async sendBatchedMessages(messages) {
-        if (!this.isConnected || !this.channels.logs) return;
+        if (!this.isConnected || !this.channels.logs) {
+            logger.debug('Cannot send batched messages - not connected or logs channel unavailable');
+            return;
+        }
 
         try {
+            if (!messages || messages.length === 0) {
+                logger.debug('No messages to batch');
+                return;
+            }
+
             let description = messages.join('\n');
             if (description.length > 1900) {
                 description = description.substring(0, 1900) + '... (truncated)';
@@ -537,7 +548,8 @@ class DiscordClient {
             await this.channels.logs.send({ embeds: [embed] });
             logger.debug(`Successfully sent ${messages.length} batched server messages`);
         } catch (error) {
-            logger.error('Failed to send batched messages:', error.message || error);
+            const errorMsg = error?.message || error?.code || JSON.stringify(error) || 'Unknown error';
+            logger.error('Failed to send batched messages:', errorMsg);
         }
     }
 
@@ -569,7 +581,15 @@ class DiscordClient {
 
     async flushBatchedMessages() {
         try {
+            if (this.pendingMessages.size === 0) {
+                return;
+            }
+
             for (const [timestamp, messages] of this.pendingMessages.entries()) {
+                if (!messages || messages.length === 0) {
+                    continue;
+                }
+
                 if (messages.length === 1) {
                     await this.sendChatMessage('Server', messages[0], true);
                 } else if (messages.length > 1) {
@@ -578,7 +598,8 @@ class DiscordClient {
                 }
             }
         } catch (error) {
-            logger.error('Failed to flush batched messages:', error);
+            const errorMsg = error?.message || error?.code || JSON.stringify(error) || 'Unknown error';
+            logger.error('Failed to flush batched messages:', errorMsg);
         } finally {
             this.pendingMessages.clear();
             this.batchTimeout = null;
