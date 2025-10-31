@@ -25,6 +25,7 @@ class MinecraftBot {
         this.reconnectTimeout = null;
         this.statusUpdateInterval = null;
         this.connectionStartTime = null;
+        this.rateLimitDelay = null;
     }
 
     // ========================================================================
@@ -61,12 +62,19 @@ class MinecraftBot {
 
     async connect() {
         try {
-            if (this.connectionState === 'connecting' || this.connectionState === 'connected') {
-                logger.warn('Connection already in progress or established, skipping');
+            // Prevent duplicate connection attempts
+            if (this.connectionState === 'connecting') {
+                logger.warn('Connection already in progress, skipping duplicate attempt');
+                return;
+            }
+            
+            if (this.connectionState === 'connected' && this.isConnected) {
+                logger.warn('Bot is already connected, skipping duplicate attempt');
                 return;
             }
 
             this.connectionState = 'connecting';
+            this.isReconnecting = false; // Reset reconnecting flag when starting fresh connection
             logger.info('Connecting to Minecraft server...');
 
             const username = config.minecraft.username || 'MinecraftBridgeBot';
@@ -236,7 +244,9 @@ class MinecraftBot {
             }
 
             if (!this.isReconnecting && this.shouldReconnect) {
-                this.handleReconnect();
+                // Use rate limit delay if we have one from a recent kick
+                this.handleReconnect(this.rateLimitDelay);
+                this.rateLimitDelay = null; // Clear it after use
             }
         });
 
@@ -266,8 +276,25 @@ class MinecraftBot {
 
         this.bot.on('kicked', (reason, loggedIn) => {
             logger.warn(`Bot was kicked: ${reason}`);
-            if (this.discordClient) {
-                this.discordClient.sendStatusEmbed('Kicked', `Bot was kicked from server: ${reason}`, 0xFFAA00);
+            
+            // Check if this is a rate limit kick
+            const waitMatch = reason.match(/wait (\d+) second/i);
+            if (waitMatch) {
+                const waitSeconds = parseInt(waitMatch[1]);
+                const waitMs = (waitSeconds + 2) * 1000; // Add 2 seconds buffer
+                logger.info(`Rate limit detected - will wait ${waitSeconds + 2} seconds before reconnecting`);
+                
+                // Store the forced delay for the next reconnection attempt
+                this.rateLimitDelay = waitMs;
+                
+                if (this.discordClient) {
+                    this.discordClient.sendStatusEmbed('⏰ Rate Limited', `Server requires ${waitSeconds}s wait. Reconnecting in ${waitSeconds + 2}s...`, 0xFFA500);
+                }
+            } else {
+                this.rateLimitDelay = null;
+                if (this.discordClient) {
+                    this.discordClient.sendStatusEmbed('Kicked', `Bot was kicked from server: ${reason}`, 0xFFAA00);
+                }
             }
         });
 
@@ -442,7 +469,7 @@ class MinecraftBot {
     // RECONNECTION LOGIC
     // ========================================================================
 
-    async handleReconnect() {
+    async handleReconnect(forcedDelay = null) {
         if (!this.shouldReconnect) {
             logger.info('Auto-reconnect is disabled, skipping reconnection');
             return;
@@ -459,10 +486,17 @@ class MinecraftBot {
 
         logger.info(`Attempting to reconnect... (Attempt #${this.reconnectAttempts})`);
 
-        const baseDelay = config.minecraft.reconnectDelay;
-        const exponentialDelay = Math.min(baseDelay * Math.pow(2, this.reconnectAttempts - 1), 300000);
-        const jitter = Math.random() * 5000;
-        const totalDelay = exponentialDelay + jitter;
+        // Use forced delay if provided (from rate limit), otherwise use exponential backoff
+        let totalDelay;
+        if (forcedDelay !== null) {
+            totalDelay = forcedDelay;
+            logger.info(`Server rate limit detected - waiting ${Math.round(totalDelay/1000)}s before reconnecting`);
+        } else {
+            const baseDelay = config.minecraft.reconnectDelay;
+            const exponentialDelay = Math.min(baseDelay * Math.pow(2, this.reconnectAttempts - 1), 300000);
+            const jitter = Math.random() * 5000;
+            totalDelay = exponentialDelay + jitter;
+        }
 
         if (this.reconnectTimeout) {
             clearTimeout(this.reconnectTimeout);
@@ -470,6 +504,21 @@ class MinecraftBot {
 
         this.reconnectTimeout = setTimeout(async () => {
             this.reconnectTimeout = null;
+            
+            // Clear existing bot instance if stuck
+            if (this.bot) {
+                try {
+                    this.bot.removeAllListeners();
+                    if (this.bot._client) {
+                        this.bot._client.end();
+                    }
+                    this.bot = null;
+                } catch (e) {
+                    logger.debug('Error clearing stuck bot instance:', e.message);
+                }
+            }
+            
+            this.clearAllTimersAndIntervals();
             
             try {
                 await this.connect();
@@ -481,7 +530,14 @@ class MinecraftBot {
                     this.discordClient.sendStatusEmbed('🔄 Reconnecting...', `Attempt #${this.reconnectAttempts} failed. Retrying in ${Math.round(totalDelay/1000)}s...`, 0xFFAA00);
                 }
                 this.isReconnecting = false;
-                this.handleReconnect();
+                
+                // Prevent infinite reconnection attempts
+                if (this.reconnectAttempts < config.minecraft.maxReconnectAttempts) {
+                    this.handleReconnect();
+                } else {
+                    logger.error('Max reconnection attempts reached, stopping auto-reconnect');
+                    this.connectionState = 'failed';
+                }
             }
         }, totalDelay);
     }
@@ -489,12 +545,18 @@ class MinecraftBot {
     resumeReconnect() {
         this.shouldReconnect = true;
         this.reconnectAttempts = 0;
+        this.isReconnecting = false; // Reset reconnecting flag
+        this.rateLimitDelay = null; // Clear any rate limit delay
         logger.info('Auto-reconnect resumed, attempting to connect...');
 
+        // Only attempt connection if not already connected or connecting
         if (!this.isConnected && this.connectionState !== 'connecting') {
+            this.connectionState = 'idle'; // Reset state
             this.connect().catch((error) => {
                 logger.warn('Resume reconnect connection attempt failed:', error.message);
             });
+        } else {
+            logger.info(`Cannot resume - current state: ${this.connectionState}, connected: ${this.isConnected}`);
         }
     }
 
