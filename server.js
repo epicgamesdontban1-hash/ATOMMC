@@ -22,6 +22,8 @@ class MinecraftDiscordBridge {
         this.server = null;
         this.startTime = Date.now();
         this.authSent = false;
+        this.chatLogs = [];
+        this.maxChatLogs = 10000;
         
         // Setup web server IMMEDIATELY in constructor for Render.com
         this.setupWebServer();
@@ -33,7 +35,7 @@ class MinecraftDiscordBridge {
 
             if (config.discord.enabled) {
                 logger.info('Connecting to Discord...');
-                this.discordClient = new DiscordClient();
+                this.discordClient = new DiscordClient(this);
                 await this.discordClient.connect();
                 await this.discordClient.setStatus('disconnected');
             } else {
@@ -122,6 +124,24 @@ class MinecraftDiscordBridge {
     resetAuthFlag() {
         this.authSent = false;
         logger.debug('Authentication flag reset for re-authentication');
+    }
+
+    logChatMessage(sender, message, isServerMessage = false) {
+        const timestamp = new Date().toISOString();
+        const logEntry = {
+            timestamp,
+            sender,
+            message,
+            isServerMessage,
+            displayTime: new Date().toLocaleString()
+        };
+        
+        this.chatLogs.push(logEntry);
+        
+        // Keep only the most recent messages
+        if (this.chatLogs.length > this.maxChatLogs) {
+            this.chatLogs.shift();
+        }
     }
 
     setupWebServer() {
@@ -505,6 +525,22 @@ class MinecraftDiscordBridge {
             ` : ''}
         </div>
         
+        <!-- Chat Logs Card -->
+        <div class="card" style="grid-column: 1 / -1;">
+            <div class="card-title">💬 Recent Chat Messages</div>
+            <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+                <button class="refresh-btn" onclick="loadChatLogs()" style="margin: 0; padding: 8px 20px;">🔄 Refresh Logs</button>
+                <button class="refresh-btn" onclick="downloadLogs()" style="margin: 0; padding: 8px 20px; background: #10b981; border-color: #10b981;">📥 Download All Logs</button>
+                <label style="display: flex; align-items: center; gap: 5px; color: #667eea; font-weight: 600;">
+                    <input type="checkbox" id="autoRefresh" checked onchange="toggleAutoRefresh()">
+                    Auto-refresh (5s)
+                </label>
+            </div>
+            <div id="chatLogs" style="max-height: 400px; overflow-y: auto; background: #f8f9fa; border-radius: 10px; padding: 15px;">
+                <p style="text-align: center; color: #999;">Loading chat logs...</p>
+            </div>
+        </div>
+        
         <button class="refresh-btn" onclick="location.reload()">🔄 Refresh Dashboard</button>
         
         <div class="footer">
@@ -513,6 +549,84 @@ class MinecraftDiscordBridge {
     </div>
     
     <script>
+        let autoRefreshInterval = null;
+        let userHasScrolled = false;
+        let lastScrollHeight = 0;
+        
+        // Detect if user has manually scrolled up
+        document.addEventListener('DOMContentLoaded', () => {
+            const chatLogsDiv = document.getElementById('chatLogs');
+            chatLogsDiv.addEventListener('scroll', () => {
+                const isAtBottom = chatLogsDiv.scrollHeight - chatLogsDiv.scrollTop <= chatLogsDiv.clientHeight + 50;
+                userHasScrolled = !isAtBottom;
+            });
+        });
+        
+        async function loadChatLogs() {
+            try {
+                const response = await fetch('/chat-logs?limit=50');
+                const data = await response.json();
+                
+                const chatLogsDiv = document.getElementById('chatLogs');
+                
+                if (data.logs.length === 0) {
+                    chatLogsDiv.innerHTML = '<p style="text-align: center; color: #999;">No chat messages yet</p>';
+                    return;
+                }
+                
+                // Display messages in chronological order (oldest to newest)
+                chatLogsDiv.innerHTML = data.logs.reverse().map(log => {
+                    const messageColor = log.isServerMessage ? '#9B59B6' : '#667eea';
+                    // Don't show sender name for server messages, just the message itself
+                    const senderDisplay = log.isServerMessage ? '' : \`<div style="color: \${messageColor}; font-weight: 600;">\${log.sender}</div>\`;
+                    return \`
+                        <div style="padding: 8px; margin: 5px 0; background: white; border-radius: 5px; border-left: 3px solid \${messageColor};">
+                            <div style="font-size: 0.85em; color: #666; margin-bottom: 3px;">\${log.displayTime}</div>
+                            \${senderDisplay}
+                            <div style="color: #333; margin-top: 3px;">\${escapeHtml(log.message)}</div>
+                        </div>
+                    \`;
+                }).join('');
+                
+                // Auto-scroll to bottom only if user hasn't manually scrolled up
+                if (!userHasScrolled || lastScrollHeight === 0) {
+                    chatLogsDiv.scrollTop = chatLogsDiv.scrollHeight;
+                }
+                lastScrollHeight = chatLogsDiv.scrollHeight;
+            } catch (error) {
+                console.error('Failed to load chat logs:', error);
+            }
+        }
+        
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+        
+        function downloadLogs() {
+            window.location.href = '/download-logs';
+        }
+        
+        function toggleAutoRefresh() {
+            const checkbox = document.getElementById('autoRefresh');
+            if (checkbox.checked) {
+                autoRefreshInterval = setInterval(loadChatLogs, 5000);
+            } else {
+                if (autoRefreshInterval) {
+                    clearInterval(autoRefreshInterval);
+                    autoRefreshInterval = null;
+                }
+            }
+        }
+        
+        // Initial load
+        loadChatLogs();
+        
+        // Start auto-refresh
+        autoRefreshInterval = setInterval(loadChatLogs, 5000);
+        
+        // Keep the original 30-second full page refresh
         setTimeout(() => location.reload(), 30000);
     </script>
 </body>
@@ -581,6 +695,42 @@ class MinecraftDiscordBridge {
                 webServer: 'running',
                 health 
             });
+        });
+
+        // ====================================================================
+        // CHAT LOGS ENDPOINT (JSON for real-time updates)
+        // ====================================================================
+        this.app.get('/chat-logs', (req, res) => {
+            const limit = parseInt(req.query.limit) || 100;
+            const offset = parseInt(req.query.offset) || 0;
+            
+            const logs = this.chatLogs.slice(-limit - offset, -offset || undefined).reverse();
+            
+            res.json({
+                logs,
+                total: this.chatLogs.length,
+                serverStartTime: new Date(this.startTime).toISOString()
+            });
+        });
+
+        // ====================================================================
+        // DOWNLOAD LOGS ENDPOINT
+        // ====================================================================
+        this.app.get('/download-logs', (req, res) => {
+            const logContent = this.chatLogs.map(log => {
+                // Don't include sender name for server messages, just the message
+                if (log.isServerMessage) {
+                    return `[${log.displayTime}] [SERVER] ${log.message}`;
+                } else {
+                    return `[${log.displayTime}] <${log.sender}> ${log.message}`;
+                }
+            }).join('\n');
+            
+            const filename = `minecraft-chat-${new Date().toISOString().replace(/:/g, '-')}.log`;
+            
+            res.setHeader('Content-Type', 'text/plain');
+            res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+            res.send(logContent);
         });
 
         const PORT = process.env.PORT || 10000;
