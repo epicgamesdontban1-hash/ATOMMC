@@ -614,11 +614,11 @@ class DiscordClient {
                 embedColor = 0x00FF41;
                 statusIcon = '🟢';
             } else if (title.includes('Disconnected') || description.includes('disconnected') || description.includes('offline')) {
-                statusText = `🔴 **OFFLINE** • Lost connection to \`${config.minecraft.host}\`\n🔄 Auto-reconnect will attempt to restore connection`;
+                statusText = `🔴 **OFFLINE** • Lost connection to \`${config.minecraft.host}\`\n🔄 Auto-reconnect will attempt to restore connection every 15 seconds`;
                 embedColor = 0xFF4757;
                 statusIcon = '🔴';
-            } else if (title.includes('Starting') || description.includes('initializing') || description.includes('starting')) {
-                statusText = `🟡 **INITIALIZING** • Establishing secure connection to \`${config.minecraft.host}\`\n⏳ Please wait while the bot connects...`;
+            } else if (title.includes('Connecting') || title.includes('Starting') || description.includes('initializing') || description.includes('starting')) {
+                statusText = `🟡 **CONNECTING** • Establishing secure connection to \`${config.minecraft.host}\`\n⏳ Please wait while the bot connects...`;
                 embedColor = 0xFFA502;
                 statusIcon = '🟡';
             } else if (title.includes('Authentication') || description.includes('authenticate')) {
@@ -629,6 +629,10 @@ class DiscordClient {
                 statusText = `🔴 **CONNECTION FAILED** • Unable to reach \`${config.minecraft.host}\`\n❌ ${description}`;
                 embedColor = 0xFF3838;
                 statusIcon = '🔴';
+            } else if (title.includes('Reconnecting')) {
+                statusText = `🔄 **RECONNECTING** • Attempting to restore connection\n⏱️ ${description}`;
+                embedColor = 0xFFA500;
+                statusIcon = '🔄';
             } else if (title.includes('Kicked')) {
                 statusText = `⚠️ **KICKED FROM SERVER** • \`${config.minecraft.host}\`\n🚫 ${description}`;
                 embedColor = 0xFF8C00;
@@ -695,6 +699,7 @@ class DiscordClient {
             }
 
             if (this.channels.status) {
+                // Always try to update existing message first
                 if (this.statusMessageId) {
                     try {
                         const message = await this.channels.status.messages.fetch(this.statusMessageId);
@@ -702,15 +707,16 @@ class DiscordClient {
                         logger.debug('Updated existing status message');
                         return;
                     } catch (fetchError) {
-                        logger.warn(`Failed to fetch existing status message (ID: ${this.statusMessageId}), creating new one`);
+                        logger.warn(`Failed to fetch status message (ID: ${this.statusMessageId}), will create new one`);
                         this.statusMessageId = null;
                     }
                 }
                 
+                // Only create new message if we don't have a valid one
                 const message = await this.channels.status.send({ embeds: [embed], components: [row] });
                 this.statusMessageId = message.id;
                 this.saveMessageIds();
-                logger.info(`Created and persisted status message with ID: ${this.statusMessageId}`);
+                logger.info(`Created new status message with ID: ${this.statusMessageId}`);
             }
         } catch (error) {
             logger.error('Failed to send status embed:', error.message || error);
