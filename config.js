@@ -9,7 +9,7 @@ const config = {
         version: process.env.MINECRAFT_VERSION || '1.21.4',
         auth: process.env.MINECRAFT_AUTH || 'microsoft',
         reconnectDelay: parseInt(process.env.RECONNECT_DELAY) || 15000,
-        maxReconnectAttempts: parseInt(process.env.MAX_RECONNECT_ATTEMPTS) || 100,
+        maxReconnectAttempts: parseInt(process.env.MAX_RECONNECT_ATTEMPTS) || 100000000000000,
         enableAntiAfk: process.env.ENABLE_ANTI_AFK === 'true'
     },
     web: {
@@ -18,6 +18,7 @@ const config = {
     },
     discord: {
         token: process.env.DISCORD_BOT_TOKEN,
+        instanceId: process.env.DISCORD_INSTANCE_ID || 'default',
         channels: {
             logs: process.env.DISCORD_LOGS_CHANNEL_ID,
             login: process.env.DISCORD_LOGIN_CHANNEL_ID,
