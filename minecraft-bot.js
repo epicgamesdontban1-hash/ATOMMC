@@ -486,16 +486,13 @@ class MinecraftBot {
 
         logger.info(`Attempting to reconnect... (Attempt #${this.reconnectAttempts})`);
 
-        // Use forced delay if provided (from rate limit), otherwise use exponential backoff
+        // Use forced delay if provided (from rate limit), otherwise use fixed 15s delay
         let totalDelay;
         if (forcedDelay !== null) {
             totalDelay = forcedDelay;
             logger.info(`Server rate limit detected - waiting ${Math.round(totalDelay/1000)}s before reconnecting`);
         } else {
-            const baseDelay = config.minecraft.reconnectDelay;
-            const exponentialDelay = Math.min(baseDelay * Math.pow(2, this.reconnectAttempts - 1), 300000);
-            const jitter = Math.random() * 5000;
-            totalDelay = exponentialDelay + jitter;
+            totalDelay = config.minecraft.reconnectDelay; // Fixed 15 seconds
         }
 
         if (this.reconnectTimeout) {
@@ -526,18 +523,10 @@ class MinecraftBot {
                 logger.info(`Reconnection successful after ${this.reconnectAttempts} attempts`);
             } catch (error) {
                 logger.error(`Reconnection attempt ${this.reconnectAttempts} failed:`, error.message);
-                if (this.discordClient) {
-                    this.discordClient.sendStatusEmbed('🔄 Reconnecting...', `Attempt #${this.reconnectAttempts} failed. Retrying in ${Math.round(totalDelay/1000)}s...`, 0xFFAA00);
-                }
                 this.isReconnecting = false;
                 
-                // Prevent infinite reconnection attempts
-                if (this.reconnectAttempts < config.minecraft.maxReconnectAttempts) {
-                    this.handleReconnect();
-                } else {
-                    logger.error('Max reconnection attempts reached, stopping auto-reconnect');
-                    this.connectionState = 'failed';
-                }
+                // Infinite retry - always attempt reconnection
+                this.handleReconnect();
             }
         }, totalDelay);
     }
