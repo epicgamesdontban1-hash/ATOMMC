@@ -5,12 +5,12 @@ const config = require('./config');
 const logger = require('./logger');
 
 console.log(`
-██████╗  ██████╗  ██████╗  ██████╗  ██████╗ 
+██████╗  ██████╗  ██████╗  ██████╗  ██████╗
 ██╔══██╗██╔═══██╗██╔════╝ ██╔════╝ ██╔═══██╗
 ██║  ██║██║   ██║██║  ███╗██║  ███╗██║   ██║
 ██║  ██║██║   ██║██║   ██║██║   ██║██║   ██║
 ██████╔╝╚██████╔╝╚██████╔╝╚██████╔╝╚██████╔╝
-╚═════╝  ╚═════╝  ╚═════╝  ╚═════╝  ╚═════╝ 
+╚═════╝  ╚═════╝  ╚═════╝  ╚═════╝  ╚═════╝
 `);
 
 class MinecraftDiscordBridge {
@@ -24,7 +24,7 @@ class MinecraftDiscordBridge {
         this.authSent = false;
         this.chatLogs = [];
         this.maxChatLogs = 10000;
-        
+
         // Setup web server IMMEDIATELY in constructor for Render.com
         this.setupWebServer();
     }
@@ -52,15 +52,15 @@ class MinecraftDiscordBridge {
             this.setupConsoleCapture();
 
             logger.info('Starting Minecraft bot connection...');
-            
+
             // Don't await - let connection happen in background
             // This prevents the app from crashing during authentication
             this.minecraftBot.connect().catch((error) => {
                 const errorMsg = error?.message || error?.toString() || '';
-                
+
                 // Check if this is an authentication error
-                if (errorMsg.includes('authenticate') || 
-                    errorMsg.includes('sign in') || 
+                if (errorMsg.includes('authenticate') ||
+                    errorMsg.includes('sign in') ||
                     errorMsg.includes('First time signing in')) {
                     logger.info('Bot connection requires authentication - waiting for user to complete auth');
                     if (this.discordClient && this.discordClient.setStatus) {
@@ -74,7 +74,7 @@ class MinecraftDiscordBridge {
             this.setupGracefulShutdown();
             logger.info('Minecraft Discord Bridge initialized successfully');
             logger.info('Bridge is ready - waiting for Minecraft authentication if needed');
-            
+
         } catch (error) {
             logger.error('Failed to initialize bridge:', error);
             // Don't exit - keep web server running for health checks
@@ -87,11 +87,11 @@ class MinecraftDiscordBridge {
         const originalWarn = console.warn;
         const originalInfo = console.info;
         const self = this;
-        
+
         const captureAuth = function(message, method) {
             if (!self.authSent && message.includes('microsoft.com/link')) {
                 const codeMatch = message.match(/code ([A-Z0-9]{8})/i) || message.match(/otc=([A-Z0-9]{8})/i);
-                
+
                 if (codeMatch && self.discordClient) {
                     self.authSent = true;
                     const authCode = codeMatch[1];
@@ -101,19 +101,19 @@ class MinecraftDiscordBridge {
                 }
             }
         };
-        
+
         console.log = function(...args) {
             const message = args.join(' ');
             captureAuth(message, 'log');
             originalLog.apply(console, args);
         };
-        
+
         console.warn = function(...args) {
             const message = args.join(' ');
             captureAuth(message, 'warn');
             originalWarn.apply(console, args);
         };
-        
+
         console.info = function(...args) {
             const message = args.join(' ');
             captureAuth(message, 'info');
@@ -128,18 +128,53 @@ class MinecraftDiscordBridge {
 
     logChatMessage(sender, message, isServerMessage = false) {
         const timestamp = new Date().toISOString();
+        const now = Date.now();
+        const batchKey = Math.floor(now / 2000); // 2-second batching window
+
+        // If this is a server message and we have recent server messages, batch them
+        if (isServerMessage && this.chatLogs.length > 0) {
+            const lastLog = this.chatLogs[this.chatLogs.length - 1];
+            const lastTime = new Date(lastLog.timestamp).getTime();
+            const timeDiff = now - lastTime;
+
+            // If last message was also a server message within 2 seconds, append to it
+            if (lastLog.isServerMessage && timeDiff < 2000) {
+                lastLog.message += '\n' + message;
+                lastLog.timestamp = timestamp; // Update timestamp to latest
+                lastLog.displayTime = new Date().toLocaleString('en-US', {
+                    month: '2-digit',
+                    day: '2-digit',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                    hour12: true
+                });
+                return;
+            }
+        }
+
+        // Otherwise, create a new log entry
         const logEntry = {
             timestamp,
             sender,
             message,
             isServerMessage,
-            displayTime: new Date().toLocaleString()
+            displayTime: new Date().toLocaleString('en-US', {
+                month: '2-digit',
+                day: '2-digit',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-second',
+                hour12: true
+            })
         };
-        
+
         this.chatLogs.push(logEntry);
-        
-        // Keep only the most recent messages
-        if (this.chatLogs.length > this.maxChatLogs) {
+
+        // Keep only last 500 messages
+        if (this.chatLogs.length > 500) {
             this.chatLogs.shift();
         }
     }
@@ -157,7 +192,7 @@ class MinecraftDiscordBridge {
             const dimension = this.minecraftBot?.bot?.game?.dimension || 'Unknown';
             const health = this.minecraftBot?.bot?.health || 0;
             const food = this.minecraftBot?.bot?.food || 0;
-            
+
             const uptimeHours = Math.floor(status.uptime / 3600);
             const uptimeMinutes = Math.floor((status.uptime % 3600) / 60);
             const uptimeSeconds = status.uptime % 60;
@@ -172,7 +207,7 @@ class MinecraftDiscordBridge {
     <title>Minecraft Monitoring Service</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -180,36 +215,36 @@ class MinecraftDiscordBridge {
             padding: 20px;
             color: #333;
         }
-        
+
         .container {
             max-width: 1200px;
             margin: 0 auto;
         }
-        
+
         .header {
             text-align: center;
             color: white;
             margin-bottom: 30px;
         }
-        
+
         .header h1 {
             font-size: 2.5em;
             margin-bottom: 10px;
             text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
         }
-        
+
         .header p {
             font-size: 1.1em;
             opacity: 0.9;
         }
-        
+
         .grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
             gap: 20px;
             margin-bottom: 20px;
         }
-        
+
         .card {
             background: white;
             border-radius: 15px;
@@ -217,11 +252,11 @@ class MinecraftDiscordBridge {
             box-shadow: 0 10px 30px rgba(0,0,0,0.2);
             transition: transform 0.3s ease;
         }
-        
+
         .card:hover {
             transform: translateY(-5px);
         }
-        
+
         .card-title {
             font-size: 1.3em;
             font-weight: 600;
@@ -231,7 +266,7 @@ class MinecraftDiscordBridge {
             align-items: center;
             gap: 10px;
         }
-        
+
         .status-indicator {
             width: 12px;
             height: 12px;
@@ -239,41 +274,41 @@ class MinecraftDiscordBridge {
             display: inline-block;
             animation: pulse 2s infinite;
         }
-        
+
         .status-online { background: #10b981; }
         .status-offline { background: #ef4444; }
-        
+
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.5; }
         }
-        
+
         .info-row {
             display: flex;
             justify-content: space-between;
             padding: 10px 0;
             border-bottom: 1px solid #f0f0f0;
         }
-        
+
         .info-row:last-child {
             border-bottom: none;
         }
-        
+
         .info-label {
             font-weight: 500;
             color: #666;
         }
-        
+
         .info-value {
             font-weight: 600;
             color: #333;
         }
-        
+
         .players-list {
             max-height: 200px;
             overflow-y: auto;
         }
-        
+
         .player-item {
             padding: 10px;
             margin: 5px 0;
@@ -283,39 +318,39 @@ class MinecraftDiscordBridge {
             align-items: center;
             gap: 10px;
         }
-        
+
         .player-avatar {
             width: 32px;
             height: 32px;
             border-radius: 5px;
         }
-        
+
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(2, 1fr);
             gap: 15px;
             margin-top: 15px;
         }
-        
+
         .stat-box {
             background: #f8f9fa;
             padding: 15px;
             border-radius: 10px;
             text-align: center;
         }
-        
+
         .stat-value {
             font-size: 2em;
             font-weight: bold;
             color: #667eea;
         }
-        
+
         .stat-label {
             font-size: 0.9em;
             color: #666;
             margin-top: 5px;
         }
-        
+
         .badge {
             display: inline-block;
             padding: 5px 12px;
@@ -323,22 +358,22 @@ class MinecraftDiscordBridge {
             font-size: 0.85em;
             font-weight: 600;
         }
-        
+
         .badge-success {
             background: #d1fae5;
             color: #065f46;
         }
-        
+
         .badge-danger {
             background: #fee2e2;
             color: #991b1b;
         }
-        
+
         .badge-warning {
             background: #fef3c7;
             color: #92400e;
         }
-        
+
         .health-bar {
             width: 100%;
             height: 25px;
@@ -347,7 +382,7 @@ class MinecraftDiscordBridge {
             overflow: hidden;
             margin-top: 10px;
         }
-        
+
         .health-fill {
             height: 100%;
             background: linear-gradient(90deg, #10b981, #34d399);
@@ -359,7 +394,7 @@ class MinecraftDiscordBridge {
             font-weight: 600;
             font-size: 0.9em;
         }
-        
+
         .refresh-btn {
             background: white;
             color: #667eea;
@@ -373,13 +408,13 @@ class MinecraftDiscordBridge {
             display: block;
             margin: 20px auto;
         }
-        
+
         .refresh-btn:hover {
             background: #667eea;
             color: white;
             transform: scale(1.05);
         }
-        
+
         .footer {
             text-align: center;
             color: white;
@@ -394,7 +429,7 @@ class MinecraftDiscordBridge {
             <h1>Minecraft Monitoring</h1>
             <p>Monitoring by doggo</p>
         </div>
-        
+
         <div class="grid">
             <!-- Bot Status Card -->
             <div class="card">
@@ -421,7 +456,7 @@ class MinecraftDiscordBridge {
                     <span class="info-value">${uptimeDisplay}</span>
                 </div>
             </div>
-            
+
             <!-- Server Info Card -->
             <div class="card">
                 <div class="card-title">🌐 Server Information</div>
@@ -444,7 +479,7 @@ class MinecraftDiscordBridge {
                 </div>
                 ` : ''}
             </div>
-            
+
             <!-- Discord Status Card -->
             <div class="card">
                 <div class="card-title">
@@ -464,7 +499,7 @@ class MinecraftDiscordBridge {
                     </span>
                 </div>
             </div>
-            
+
             <!-- Players Card -->
             <div class="card">
                 <div class="card-title">👥 Online Players (${status.players.length})</div>
@@ -477,7 +512,7 @@ class MinecraftDiscordBridge {
                     `).join('') : '<p style="text-align: center; color: #999; padding: 20px;">No players online</p>'}
                 </div>
             </div>
-            
+
             ${status.bot.connected ? `
             <!-- Position Card -->
             <div class="card">
@@ -503,7 +538,7 @@ class MinecraftDiscordBridge {
                 </div>
                 ` : '<p style="text-align: center; color: #999;">Position unavailable</p>'}
             </div>
-            
+
             <!-- Health Card -->
             <div class="card">
                 <div class="card-title">❤️ Bot Health</div>
@@ -524,7 +559,7 @@ class MinecraftDiscordBridge {
             </div>
             ` : ''}
         </div>
-        
+
         <!-- Chat Logs Card -->
         <div class="card" style="grid-column: 1 / -1;">
             <div class="card-title">💬 Recent Chat Messages</div>
@@ -540,19 +575,19 @@ class MinecraftDiscordBridge {
                 <p style="text-align: center; color: #999;">Loading chat logs...</p>
             </div>
         </div>
-        
-        <button class="refresh-btn" onclick="location.reload()">🔄 Refresh Dashboard</button>
-        
+
+        <button class="refresh-btn" onclick="location.reload()"> Refresh Dashboard</button>
+
         <div class="footer">
             <p>Minecraft Monitoring Service • Last updated: ${new Date().toLocaleTimeString()}</p>
         </div>
     </div>
-    
+
     <script>
         let autoRefreshInterval = null;
         let userHasScrolled = false;
         let lastScrollHeight = 0;
-        
+
         // Detect if user has manually scrolled up
         document.addEventListener('DOMContentLoaded', () => {
             const chatLogsDiv = document.getElementById('chatLogs');
@@ -561,19 +596,19 @@ class MinecraftDiscordBridge {
                 userHasScrolled = !isAtBottom;
             });
         });
-        
+
         async function loadChatLogs() {
             try {
                 const response = await fetch('/chat-logs?limit=50');
                 const data = await response.json();
-                
+
                 const chatLogsDiv = document.getElementById('chatLogs');
-                
+
                 if (data.logs.length === 0) {
                     chatLogsDiv.innerHTML = '<p style="text-align: center; color: #999;">No chat messages yet</p>';
                     return;
                 }
-                
+
                 // Display messages in chronological order (oldest to newest)
                 chatLogsDiv.innerHTML = data.logs.reverse().map(log => {
                     const messageColor = log.isServerMessage ? '#9B59B6' : '#667eea';
@@ -587,7 +622,7 @@ class MinecraftDiscordBridge {
                         </div>
                     \`;
                 }).join('');
-                
+
                 // Auto-scroll to bottom only if user hasn't manually scrolled up
                 if (!userHasScrolled || lastScrollHeight === 0) {
                     chatLogsDiv.scrollTop = chatLogsDiv.scrollHeight;
@@ -597,17 +632,17 @@ class MinecraftDiscordBridge {
                 console.error('Failed to load chat logs:', error);
             }
         }
-        
+
         function escapeHtml(text) {
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
         }
-        
+
         function downloadLogs() {
             window.location.href = '/download-logs';
         }
-        
+
         function toggleAutoRefresh() {
             const checkbox = document.getElementById('autoRefresh');
             if (checkbox.checked) {
@@ -619,13 +654,13 @@ class MinecraftDiscordBridge {
                 }
             }
         }
-        
+
         // Initial load
         loadChatLogs();
-        
+
         // Start auto-refresh
         autoRefreshInterval = setInterval(loadChatLogs, 5000);
-        
+
         // Keep the original 30-second full page refresh
         setTimeout(() => location.reload(), 30000);
     </script>
@@ -646,8 +681,8 @@ class MinecraftDiscordBridge {
         // PLAYERS PAGE (JSON for API)
         // ====================================================================
         this.app.get('/players', (req, res) => {
-            const players = this.minecraftBot && this.minecraftBot.players 
-                ? Array.from(this.minecraftBot.players) 
+            const players = this.minecraftBot && this.minecraftBot.players
+                ? Array.from(this.minecraftBot.players)
                 : [];
             res.json({
                 count: players.length,
@@ -690,10 +725,10 @@ class MinecraftDiscordBridge {
                     position: this.minecraftBot.bot.entity?.position
                 }
                 : null;
-            res.json({ 
+            res.json({
                 status: 'healthy',
                 webServer: 'running',
-                health 
+                health
             });
         });
 
@@ -703,9 +738,9 @@ class MinecraftDiscordBridge {
         this.app.get('/chat-logs', (req, res) => {
             const limit = parseInt(req.query.limit) || 100;
             const offset = parseInt(req.query.offset) || 0;
-            
+
             const logs = this.chatLogs.slice(-limit - offset, -offset || undefined).reverse();
-            
+
             res.json({
                 logs,
                 total: this.chatLogs.length,
@@ -725,9 +760,9 @@ class MinecraftDiscordBridge {
                     return `[${log.displayTime}] <${log.sender}> ${log.message}`;
                 }
             }).join('\n');
-            
+
             const filename = `minecraft-chat-${new Date().toISOString().replace(/:/g, '-')}.log`;
-            
+
             res.setHeader('Content-Type', 'text/plain');
             res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
             res.send(logContent);
@@ -758,7 +793,7 @@ class MinecraftDiscordBridge {
                 connected: this.discordClient?.isConnected || false
             },
             uptime: uptime,
-            players: this.minecraftBot && this.minecraftBot.players 
+            players: this.minecraftBot && this.minecraftBot.players
                 ? Array.from(this.minecraftBot.players)
                 : []
         };
@@ -796,7 +831,7 @@ class MinecraftDiscordBridge {
             const errorStr = error?.toString() || '';
             const stackStr = error?.stack || '';
             let errorMsg = error?.message || error?.code || '';
-            
+
             if (!errorMsg && typeof error === 'object') {
                 try {
                     errorMsg = JSON.stringify(error, Object.getOwnPropertyNames(error));
@@ -804,8 +839,8 @@ class MinecraftDiscordBridge {
                     errorMsg = errorStr;
                 }
             }
-            
-            if (errorStr.includes('unknown chat format code') || 
+
+            if (errorStr.includes('unknown chat format code') ||
                 stackStr.includes('ChatMessage.fromNetwork') ||
                 stackStr.includes('prismarine-chat') ||
                 errorStr.includes('PartialReadError') ||
@@ -813,14 +848,14 @@ class MinecraftDiscordBridge {
                 logger.warn('Ignoring non-critical parsing error:', errorMsg || 'chat format error');
                 return;
             }
-            
+
             logger.error('Uncaught exception:', error);
             logger.error('Stack:', error?.stack);
         });
-        
+
         process.on('unhandledRejection', (reason, promise) => {
             const reasonStr = reason?.toString() || '';
-            
+
             if (reasonStr.includes('Connection timeout') ||
                 reasonStr.includes('Connection ended') ||
                 reasonStr.includes('ECONNREFUSED') ||
@@ -828,7 +863,7 @@ class MinecraftDiscordBridge {
                 logger.warn('Connection issue (will auto-reconnect):', reason?.message || reasonStr);
                 return;
             }
-            
+
             logger.error('Unhandled rejection:', reason);
             logger.error('Stack:', reason?.stack);
         });
