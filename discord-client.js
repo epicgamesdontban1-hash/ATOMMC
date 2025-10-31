@@ -10,7 +10,7 @@ const path = require('path');
 // ============================================================================
 
 class DiscordClient {
-    constructor() {
+    constructor(bridge = null) {
         this.client = null;
         this.channels = {
             logs: null,
@@ -25,12 +25,16 @@ class DiscordClient {
         this.pendingMessages = new Map();
         this.batchTimeout = null;
         this.minecraftBot = null;
+        this.bridge = bridge;
         this.statusUpdateInProgress = false;
         this.playerListUpdateInProgress = false;
         this.authMessageId = null;
         this.queueRetries = new Map();
         this.maxQueueRetries = 3;
-        this.messageIdsFile = path.join('./cache', 'discord-message-ids.json');
+        
+        // Use instance-specific cache file to prevent conflicts
+        this.instanceId = process.env.DISCORD_INSTANCE_ID || 'default';
+        this.messageIdsFile = path.join('./cache', `discord-message-ids-${this.instanceId}.json`);
         
         this.loadMessageIds();
     }
@@ -387,6 +391,11 @@ class DiscordClient {
     }
 
     async sendChatMessage(playerName, message, isServerMessage = false) {
+        // Log to bridge for web interface
+        if (this.bridge && this.bridge.logChatMessage) {
+            this.bridge.logChatMessage(playerName, message, isServerMessage);
+        }
+        
         if (!this.isConnected) {
             this.messageQueue.push({message: `**${playerName}**: ${message}`, channelType: 'logs'});
             return;
